@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flowtwin"
+version = "0.1.0"
+description = "Reinforcement-learning production scheduling on a digital twin of a packaging line"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Louay Akremi" }]
+license = { text = "MIT" }
+dependencies = [
+  "numpy>=1.26",
+  "simpy>=4.1",
+  "gymnasium>=0.29",
+  "torch>=2.2",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "pydantic>=2.6",
+  "paho-mqtt>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "stable-baselines3>=2.3", "httpx>=0.27"]
+
+[tool.setuptools.packages.find]
+include = ["flowtwin*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

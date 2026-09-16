@@ -1,0 +1,113 @@
+"""Gymnasium environment wrapping the SimPy production line.
+
+Observation (float32 vector):
+    buffer fill per inter-stage buffer (n_stages-1)
+    inlet queue fill relative to batch size (1)
+    stage down flags (n_stages)
+    one-hot of the product currently on stage 0 (n_products)
+    remaining demand fraction per product (n_products)
+    urgency per product: (due - now)/horizon clipped to [-1, 1] (n_products)
+    elapsed time fraction (1)
+
+Action: Discrete(n_products * n_speeds) -> (product, speed) = divmod(action, n_speeds)
+
+Reward per decision = w_throughput * new_units
+                    - w_changeover * new_changeover_minutes
+                    - w_energy     * new_energy
+                    - w_tardiness  * new_tardiness_minutes
+                    - w_invalid    * invalid_choice
+                    - w_unmet      * unmet_units          (terminal step only)
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, Optional, Tuple
+
+import gymnasium as gym
+import numpy as np
+from gymnasium import spaces
+
+from .config import DEFAULT, LineConfig
+from .line import Orders, ProductionLine
+
+
+class FlowTwinEnv(gym.Env):
+    metadata = {"render_modes": []}
+
+    def __init__(self, cfg: LineConfig = DEFAULT, orders: Optional[Orders] = None):
+        super().__init__()
+        self.cfg = cfg
+        self._fixed_orders = orders
+        self.line: Optional[ProductionLine] = None
+        n_obs = (cfg.n_stages - 1) + 1 + cfg.n_stages + 3 * cfg.n_products + 1
+        self.observation_space = spaces.Box(-1.0, 1.0, shape=(n_obs,), dtype=np.float32)
+        self.action_space = spaces.Discrete(cfg.n_actions)
+        self._snapshot: Dict[str, float] = {}
+
+    # ------------------------------------------------------------ gym API
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
+        super().reset(seed=seed)
+        rng = self.np_random
+        orders = self._fixed_orders or Orders.sample(self.cfg, rng)
+        self.line = ProductionLine(self.cfg, orders, rng)
+        self.line.run_until_decision()
+        self._snapshot = self._metrics()
+        return self._obs(), self._info()
+
+    def step(self, action: int):
+        assert self.line is not None, "call reset() first"
+        product, speed = self.decode(action)
+        before = self._snapshot
+        invalid = 1.0 if self.line.remaining[product] <= 0 else 0.0
+
+        self.line.submit_action(product, speed)
+        self.line.run_until_decision()
+
+        after = self._metrics()
+        cfg = self.cfg
+        reward = (
+            cfg.w_throughput * (after["units"] - before["units"])
+            - cfg.w_changeover * (after["changeover"] - before["changeover"])
+            - cfg.w_energy * (after["energy"] - before["energy"])
+            - cfg.w_tardiness * (after["tardiness"] - before["tardiness"])
+            - cfg.w_invalid * invalid
+        )
+        terminated = bool(self.line.finished and self.line.unmet_units == 0)
+        truncated = bool(self.line.finished and not terminated)
+        if terminated or truncated:
+            reward -= cfg.w_unmet * self.line.unmet_units
+        self._snapshot = after
+        return self._obs(), float(reward), terminated, truncated, self._info()
+
+    # ------------------------------------------------------------ helpers
+    def decode(self, action: int) -> Tuple[int, int]:
+        product, speed = divmod(int(action), self.cfg.n_speeds)
+        return product, speed
+
+    def encode(self, product: int, speed: int) -> int:
+        return int(product) * self.cfg.n_speeds + int(speed)
+
+    def _metrics(self) -> Dict[str, float]:
+        ln = self.line
+        return {"units": ln.units_out, "changeover": ln.changeover_minutes,
+                "energy": ln.energy, "tardiness": ln.tardiness}
+
+    def _obs(self) -> np.ndarray:
+        ln, cfg = self.line, self.cfg
+        buf = [len(b.items) / cfg.buffer_capacity for b in ln.buffers]
+        inlet = [min(1.0, len(ln.inlet.items) / cfg.batch_size)]
+        down = [1.0 if d else 0.0 for d in ln.down]
+        onehot = [0.0] * cfg.n_products
+        if ln.last_product[0] is not None:
+            onehot[ln.last_product[0]] = 1.0
+        remaining = [ln.remaining[p] / max(1, ln.orders.quantity[p]) for p in range(cfg.n_products)]
+        urgency = [float(np.clip((ln.orders.due[p] - ln.now) / cfg.horizon, -1.0, 1.0)) for p in range(cfg.n_products)]
+        t = [min(1.0, ln.now / cfg.horizon)]
+        return np.asarray(buf + inlet + down + onehot + remaining + urgency + t, dtype=np.float32)
+
+    def _info(self) -> Dict[str, Any]:
+        return {"kpis": self.line.kpis(), "valid_products": self.line.valid_products(),
+                "orders": {"quantity": self.line.orders.quantity, "due": self.line.orders.due}}
+
+
+def make_env(cfg: LineConfig = DEFAULT, orders: Optional[Orders] = None) -> FlowTwinEnv:
+    return FlowTwinEnv(cfg, orders)
