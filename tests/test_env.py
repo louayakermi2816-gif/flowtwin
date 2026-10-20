@@ -59,6 +59,30 @@ def test_invalid_action_is_penalised_and_recovered():
     assert 0 not in info["valid_products"] or info["kpis"]["finished"]
 
 
+def test_action_masks_follow_remaining_demand():
+    cfg = LineConfig(order_qty_range=(20, 20))
+    env = FlowTwinEnv(cfg, Orders(quantity=[20, 20, 20], due=[400.0, 500.0, 600.0]))
+    obs, info = env.reset(seed=0)
+    assert info["action_mask"].dtype == bool and info["action_mask"].all()
+    _, _, _, _, info = env.step(env.encode(0, 1))      # product 0 fully launched (one batch)
+    mask = info["action_mask"]
+    assert np.array_equal(mask, env.action_masks())
+    assert not mask[env.encode(0, 0):env.encode(0, 0) + cfg.n_speeds].any()
+    assert mask[env.encode(1, 0):].all()
+
+
+def test_end_of_shift_terminates_with_unmet_penalty():
+    env = FlowTwinEnv(LineConfig(horizon=60.0))         # far too short for the demand
+    obs, _ = env.reset(seed=2)
+    done = False
+    while not done:
+        obs, r, term, trunc, info = env.step(edd(env, obs))
+        done = term or trunc
+    assert term and not trunc                           # the shift end is a true terminal state
+    assert info["kpis"]["unmet_units"] > 0
+    assert r < 0                                        # the last step carries the unmet penalty
+
+
 def test_no_breakdown_plan_and_deviations():
     env = FlowTwinEnv(DEFAULT)
     obs, info = env.reset(seed=11)

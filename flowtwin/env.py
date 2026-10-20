@@ -10,6 +10,8 @@ Observation (float32 vector):
     elapsed time fraction (1)
 
 Action: Discrete(n_products * n_speeds) -> (product, speed) = divmod(action, n_speeds)
+Action mask: env.action_masks() / info["action_mask"] is True for every action whose product
+still has demand to launch (the method name matches sb3-contrib's MaskablePPO).
 
 Reward per decision = w_throughput * new_units
                     - w_changeover * new_changeover_minutes
@@ -17,6 +19,9 @@ Reward per decision = w_throughput * new_units
                     - w_tardiness  * new_tardiness_minutes
                     - w_invalid    * invalid_choice
                     - w_unmet      * unmet_units          (terminal step only)
+
+The end of the shift is part of the MDP (elapsed time is observed and unmet units are
+penalised), so an episode always *terminates*; it is never truncated.
 """
 from __future__ import annotations
 
@@ -71,9 +76,9 @@ class FlowTwinEnv(gym.Env):
             - cfg.w_tardiness * (after["tardiness"] - before["tardiness"])
             - cfg.w_invalid * invalid
         )
-        terminated = bool(self.line.finished and self.line.unmet_units == 0)
-        truncated = bool(self.line.finished and not terminated)
-        if terminated or truncated:
+        terminated = bool(self.line.finished)
+        truncated = False
+        if terminated:
             reward -= cfg.w_unmet * self.line.unmet_units
         self._snapshot = after
         return self._obs(), float(reward), terminated, truncated, self._info()
@@ -85,6 +90,15 @@ class FlowTwinEnv(gym.Env):
 
     def encode(self, product: int, speed: int) -> int:
         return int(product) * self.cfg.n_speeds + int(speed)
+
+    def action_masks(self) -> np.ndarray:
+        """Boolean mask over actions: True where the product still has demand to launch
+        (all actions once nothing is left, so a masked argmax is always defined)."""
+        valid = self.line.valid_products() or range(self.cfg.n_products)
+        mask = np.zeros(self.cfg.n_actions, dtype=bool)
+        for p in valid:
+            mask[self.encode(p, 0):self.encode(p, 0) + self.cfg.n_speeds] = True
+        return mask
 
     def _metrics(self) -> Dict[str, float]:
         ln = self.line
@@ -106,6 +120,7 @@ class FlowTwinEnv(gym.Env):
 
     def _info(self) -> Dict[str, Any]:
         return {"kpis": self.line.kpis(), "valid_products": self.line.valid_products(),
+                "action_mask": self.action_masks(),
                 "orders": {"quantity": self.line.orders.quantity, "due": self.line.orders.due}}
 
 
