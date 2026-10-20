@@ -3,7 +3,14 @@
 Written from scratch on purpose: actor-critic MLP, Generalised Advantage
 Estimation, clipped surrogate objective, value loss and entropy bonus. The
 implementation is kept small enough to be read in one sitting and is
-cross-checked against Stable-Baselines3 PPO in `scripts/train_ppo.py`.
+cross-checked against sb3-contrib MaskablePPO in `scripts/train_ppo.py`.
+
+Two details matter on FlowTwin:
+- invalid-action masking: products with no remaining demand get zero probability
+  (env.action_masks()), so no decision is wasted on them;
+- reward_scale: rewards are scaled for learning only. Unscaled episode returns are
+  ~300, and the critic's gradient then swamps the policy's on the shared trunk under
+  the global gradient-norm clip. Logged returns stay in environment units.
 """
 from __future__ import annotations
 
@@ -27,13 +34,17 @@ class ActorCritic(nn.Module):
             nn.init.orthogonal_(layer.weight, gain=0.01 if layer is self.pi else 1.0)
             nn.init.zeros_(layer.bias)
 
-    def forward(self, obs: torch.Tensor):
+    def forward(self, obs: torch.Tensor, mask: Optional[torch.Tensor] = None):
         h = self.trunk(obs)
-        return Categorical(logits=self.pi(h)), self.v(h).squeeze(-1)
+        logits = self.pi(h)
+        if mask is not None:
+            logits = logits.masked_fill(~mask, -1e9)          # masked actions get zero probability
+        return Categorical(logits=logits), self.v(h).squeeze(-1)
 
     @torch.no_grad()
-    def act(self, obs: np.ndarray, deterministic: bool = False) -> int:
-        dist, _ = self(torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0))
+    def act(self, obs: np.ndarray, deterministic: bool = False, mask: Optional[np.ndarray] = None) -> int:
+        m = None if mask is None else torch.as_tensor(mask, dtype=torch.bool).unsqueeze(0)
+        dist, _ = self(torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0), m)
         a = dist.probs.argmax(-1) if deterministic else dist.sample()
         return int(a.item())
 
@@ -52,6 +63,8 @@ class PPOConfig:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     hidden: int = 128
+    reward_scale: float = 0.01      # learning only: keeps value targets O(1)
+    mask_invalid: bool = True       # use info["action_mask"] when the env provides it
     seed: int = 0
 
 
@@ -75,34 +88,37 @@ def train_ppo(env: gym.Env, cfg: PPOConfig = PPOConfig(), log: Optional[Callable
     model = ActorCritic(obs_dim, env.action_space.n, cfg.hidden)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr, eps=1e-5)
 
-    obs, _ = env.reset(seed=cfg.seed)
+    obs, info = env.reset(seed=cfg.seed)
+    mask = _mask(info, cfg)
     ep_return, ep_len, history = 0.0, 0, []
     steps = 0
     while steps < cfg.total_steps:
-        B = {k: [] for k in ("obs", "act", "logp", "rew", "done", "val")}
+        B = {k: [] for k in ("obs", "mask", "act", "logp", "rew", "done", "val")}
         for _ in range(cfg.rollout_len):
             t_obs = torch.as_tensor(obs, dtype=torch.float32)
+            t_mask = None if mask is None else torch.as_tensor(mask).unsqueeze(0)
             with torch.no_grad():
-                dist, value = model(t_obs.unsqueeze(0))
+                dist, value = model(t_obs.unsqueeze(0), t_mask)
                 action = dist.sample()
                 logp = dist.log_prob(action)
             next_obs, r, term, trunc, info = env.step(int(action.item()))
             done = term or trunc
-            B["obs"].append(obs); B["act"].append(int(action)); B["logp"].append(float(logp))
-            B["rew"].append(float(r)); B["done"].append(float(done)); B["val"].append(float(value))
+            B["obs"].append(obs); B["mask"].append(mask); B["act"].append(int(action)); B["logp"].append(float(logp))
+            B["rew"].append(float(r) * cfg.reward_scale); B["done"].append(float(done)); B["val"].append(float(value))
             ep_return += r; ep_len += 1; steps += 1
             if done:
                 history.append({"steps": steps, "return": ep_return, "length": ep_len, "kpis": info.get("kpis")})
                 if log:
                     log({"steps": steps, "return": round(ep_return, 1), "length": ep_len})
                 ep_return, ep_len = 0.0, 0
-                next_obs, _ = env.reset()
-            obs = next_obs
+                next_obs, info = env.reset()
+            obs, mask = next_obs, _mask(info, cfg)
         with torch.no_grad():
             _, last_value = model(torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0))
         adv, ret = compute_gae(np.array(B["rew"]), np.array(B["val"]), np.array(B["done"]),
                                float(last_value), cfg.gamma, cfg.gae_lambda)
         t_obs = torch.as_tensor(np.array(B["obs"]), dtype=torch.float32)
+        t_mask = None if B["mask"][0] is None else torch.as_tensor(np.array(B["mask"]))
         t_act = torch.as_tensor(B["act"])
         t_logp = torch.as_tensor(B["logp"])
         t_adv = torch.as_tensor(adv)
@@ -114,7 +130,7 @@ def train_ppo(env: gym.Env, cfg: PPOConfig = PPOConfig(), log: Optional[Callable
             idx = torch.randperm(n)
             for start in range(0, n, cfg.minibatch):
                 mb = idx[start:start + cfg.minibatch]
-                dist, value = model(t_obs[mb])
+                dist, value = model(t_obs[mb], None if t_mask is None else t_mask[mb])
                 logp = dist.log_prob(t_act[mb])
                 ratio = torch.exp(logp - t_logp[mb])
                 surr = torch.min(ratio * t_adv[mb], torch.clamp(ratio, 1 - cfg.clip, 1 + cfg.clip) * t_adv[mb])
@@ -126,7 +142,12 @@ def train_ppo(env: gym.Env, cfg: PPOConfig = PPOConfig(), log: Optional[Callable
     return model, history
 
 
-def policy_from_model(model: ActorCritic, deterministic: bool = True):
+def _mask(info: Dict, cfg: PPOConfig) -> Optional[np.ndarray]:
+    return info.get("action_mask") if cfg.mask_invalid else None
+
+
+def policy_from_model(model: ActorCritic, deterministic: bool = True, masked: bool = True):
     def _policy(env, obs):
-        return model.act(obs, deterministic=deterministic)
+        mask = env.action_masks() if masked and hasattr(env, "action_masks") else None
+        return model.act(obs, deterministic=deterministic, mask=mask)
     return _policy

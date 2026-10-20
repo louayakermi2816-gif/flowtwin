@@ -63,11 +63,11 @@ def _load_models():
             _models[name] = m
 
 
-def _policy_action(policy: str, obs: np.ndarray) -> int:
+def _policy_action(policy: str, obs: np.ndarray, mask: Optional[np.ndarray] = None) -> int:
     if policy in HEURISTICS:
         return HEURISTICS[policy](_env, obs)
     if policy in _models:
-        return _models[policy].act(obs)
+        return _models[policy].act(obs, mask=mask)
     raise HTTPException(400, f"unknown policy '{policy}'. Available: {list(HEURISTICS) + list(_models)}")
 
 
@@ -106,7 +106,7 @@ def step(req: StepRequest):
     _require()
     if _env.line.finished:
         raise HTTPException(409, "episode finished; call /twin/reset")
-    action = req.action if req.action is not None else _policy_action(req.policy or "edd", _obs)
+    action = req.action if req.action is not None else _policy_action(req.policy or "edd", _obs, _env.action_masks())
     _obs, reward, term, trunc, info = _env.step(int(action))
     dev = deviations(_env, _plan)
     _publisher.publish("kpis", info["kpis"])
@@ -141,7 +141,8 @@ def get_deviations(threshold_min: float = 45.0):
 def act(req: ActRequest):
     _require()
     obs = np.asarray(req.obs, dtype=np.float32) if req.obs is not None else _obs
-    a = _policy_action(req.policy, obs)
+    mask = _env.action_masks() if req.obs is None else None   # a client-supplied obs has no known mask
+    a = _policy_action(req.policy, obs, mask)
     return {"policy": req.policy, "action": int(a), "decoded": _env.decode(int(a))}
 
 

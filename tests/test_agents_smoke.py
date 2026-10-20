@@ -36,3 +36,24 @@ def test_dqn_trains_and_acts():
                                           eps_decay_steps=100, seed=1), log=None)
     res = evaluate(policy_from_qnet(q), SMALL, n_episodes=2)
     assert np.all(np.isfinite(res["return"]))
+
+
+def _invalid_picks(policy, cfg, seeds=(0, 1)):
+    env, total = FlowTwinEnv(cfg), 0
+    for s in seeds:
+        obs, _ = env.reset(seed=s)
+        done = False
+        while not done:
+            obs, _, term, trunc, info = env.step(policy(env, obs))
+            done = term or trunc
+        total += info["kpis"]["invalid_actions"]
+    return total
+
+
+def test_masked_agents_never_pick_exhausted_products():
+    model, _ = train_ppo(FlowTwinEnv(SMALL), PPOConfig(total_steps=256, rollout_len=64, minibatch=32, epochs=2, seed=1), log=None)
+    q, _ = train_dqn(FlowTwinEnv(SMALL), DQNConfig(total_steps=300, learning_starts=32, batch_size=16, target_update_every=50,
+                                                   eps_decay_steps=100, seed=1), log=None)
+    assert _invalid_picks(policy_from_model(model), SMALL) == 0
+    assert _invalid_picks(policy_from_model(model, deterministic=False), SMALL) == 0
+    assert _invalid_picks(policy_from_qnet(q), SMALL) == 0
