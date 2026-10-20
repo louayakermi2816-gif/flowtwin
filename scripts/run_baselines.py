@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from flowtwin.config import DEFAULT
-from flowtwin.evaluate import evaluate, save_results, summarize
+from flowtwin.evaluate import evaluate, paired_summary, save_results, summarize
 from flowtwin.heuristics import HEURISTICS
 
 
@@ -22,8 +22,8 @@ def main():
     args = ap.parse_args()
 
     results = {name: evaluate(pol, DEFAULT, args.episodes, args.seed0) for name, pol in HEURISTICS.items()}
-    print(summarize(results))
-    save_results(results, Path(args.out), "baselines")
+    print(summarize(results) + "\n\n" + paired_summary(results, "edd"))
+    save_results(results, Path(args.out), "baselines", refs=("edd",))
     print(f"\nsaved to {args.out}/baselines.{{md,csv,json}}")
 
 

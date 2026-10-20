@@ -3,6 +3,7 @@ import pytest
 
 from flowtwin.config import DEFAULT, LineConfig
 from flowtwin.env import FlowTwinEnv
+from flowtwin.evaluate import evaluate, paired_summary
 from flowtwin.heuristics import HEURISTICS, edd
 from flowtwin.line import Orders
 from flowtwin.plan import compute_plan, deviations
@@ -47,6 +48,26 @@ def test_heuristics_run(name):
     total, k = rollout(FlowTwinEnv(DEFAULT), HEURISTICS[name], seed=3)
     assert np.isfinite(total)
     assert k["decisions"] > 0
+
+
+def test_edd_low_is_edd_at_low_speed():
+    env = FlowTwinEnv(DEFAULT)
+    obs, _ = env.reset(seed=4)
+    assert env.decode(HEURISTICS["edd_low"](env, obs)) == (env.decode(edd(env, obs))[0], 0)
+
+
+def test_random_baseline_is_reproducible():
+    a = evaluate(HEURISTICS["random"], DEFAULT, n_episodes=2)
+    b = evaluate(HEURISTICS["random"], DEFAULT, n_episodes=2)
+    assert all(np.array_equal(a[c], b[c]) for c in a)
+
+
+def test_paired_summary_matches_per_seed_differences():
+    res = {name: evaluate(HEURISTICS[name], DEFAULT, n_episodes=3) for name in ("edd", "edd_low")}
+    d = res["edd_low"]["return"] - res["edd"]["return"]
+    row = next(line for line in paired_summary(res, "edd").splitlines() if line.startswith("| edd_low |"))
+    assert row.split("|")[2].strip().startswith(f"{d.mean():+.1f} ±")
+    assert row.rstrip().endswith(f"| {int((d > 0).sum())}/3 |")
 
 
 def test_invalid_action_is_penalised_and_recovered():

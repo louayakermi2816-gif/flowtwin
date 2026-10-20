@@ -14,7 +14,7 @@ import torch
 
 from flowtwin.config import DEFAULT
 from flowtwin.env import FlowTwinEnv
-from flowtwin.evaluate import evaluate, save_results, summarize
+from flowtwin.evaluate import evaluate, save_results
 from flowtwin.heuristics import HEURISTICS
 from flowtwin.ppo import PPOConfig, policy_from_model, train_ppo
 
@@ -46,8 +46,8 @@ def main():
         sb3.save("models/ppo_sb3")
         results["ppo (sb3)"] = evaluate(lambda e, o: int(sb3.predict(o, deterministic=True)[0]), DEFAULT, args.episodes)
 
-    print(summarize(results))
-    save_results(results, out, "ppo_vs_heuristics")
+    save_results(results, out, "ppo_vs_heuristics", refs=("edd", "edd_low"))
+    print((out / "ppo_vs_heuristics.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
