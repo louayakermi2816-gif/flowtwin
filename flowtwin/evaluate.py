@@ -60,10 +60,14 @@ def t95(df: int) -> float:
             + (3 * z**7 + 19 * z**5 + 17 * z**3 - 15 * z) / (384 * df**3))
 
 
+TIE_TOL = 1e-6   # two policies that schedule a shift identically can differ by float noise (~1e-13)
+
+
 def paired_summary(results: Dict[str, Dict[str, np.ndarray]], ref: str,
                    cols: Sequence[str] = ("return", "tardiness_min", "energy")) -> str:
     """Markdown table of per-seed differences (policy - ref): mean ± 95% CI half-width, and the
-    number of seeds on which the policy's return is higher than the reference's."""
+    number of seeds on which the policy's return is higher than the reference's (ties, i.e.
+    differences within TIE_TOL, are counted separately)."""
     base = results[ref]
     n = len(base["return"])
     head = f"| paired vs {ref} | " + " | ".join(f"Δ {c}" for c in cols) + " | higher return |"
@@ -76,7 +80,9 @@ def paired_summary(results: Dict[str, Dict[str, np.ndarray]], ref: str,
             d = res[c] - base[c]
             half = t95(n - 1) * d.std(ddof=1) / np.sqrt(n) if n > 1 else float("nan")
             cells.append(f"{d.mean():+.1f} ± {half:.1f}")
-        lines.append(f"| {name} | " + " | ".join(cells) + f" | {int((res['return'] > base['return']).sum())}/{n} |")
+        d_ret = res["return"] - base["return"]
+        higher, ties = int((d_ret > TIE_TOL).sum()), int((np.abs(d_ret) <= TIE_TOL).sum())
+        lines.append(f"| {name} | " + " | ".join(cells) + f" | {higher}/{n}" + (f" ({ties} tied)" if ties else "") + " |")
     return "\n".join(lines)
 
 

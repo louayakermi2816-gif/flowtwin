@@ -67,7 +67,14 @@ def test_paired_summary_matches_per_seed_differences():
     d = res["edd_low"]["return"] - res["edd"]["return"]
     row = next(line for line in paired_summary(res, "edd").splitlines() if line.startswith("| edd_low |"))
     assert row.split("|")[2].strip().startswith(f"{d.mean():+.1f} ±")
-    assert row.rstrip().endswith(f"| {int((d > 0).sum())}/3 |")
+    assert row.rstrip().endswith(f"| {int((d > 1e-6).sum())}/3 |")
+
+
+def test_paired_summary_counts_float_noise_as_ties():
+    base = {"return": np.array([100.0, 200.0, 300.0]), "tardiness_min": np.zeros(3), "energy": np.zeros(3)}
+    same_schedule = {k: v + 1e-13 for k, v in base.items()}   # identical schedule, different summation order
+    row = paired_summary({"ref": base, "same": same_schedule}, "ref").splitlines()[-1]
+    assert row.rstrip().endswith("| 0/3 (3 tied) |")
 
 
 def test_invalid_action_is_penalised_and_recovered():
