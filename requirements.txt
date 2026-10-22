@@ -3,6 +3,7 @@ simpy>=4.1
 gymnasium>=0.29
 torch>=2.2
 stable-baselines3>=2.3
+sb3-contrib>=2.3
 fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.6

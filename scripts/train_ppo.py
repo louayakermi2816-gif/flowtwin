@@ -1,7 +1,8 @@
-"""Train the from-scratch PPO agent, optionally cross-check with Stable-Baselines3 PPO,
-then evaluate both against the heuristics on the same seeds.
+"""Train the from-scratch PPO agent, optionally cross-check with sb3-contrib MaskablePPO
+(same invalid-action masks, same learner-side reward scale), then evaluate both against
+the heuristics on the same seeds.
 
-    python scripts/train_ppo.py --steps 200000 --sb3
+    python scripts/train_ppo.py --steps 100000 --sb3
 """
 from __future__ import annotations
 
@@ -25,14 +26,17 @@ def main():
     ap.add_argument("--steps", type=int, default=100_000)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--episodes", type=int, default=30, help="evaluation episodes")
-    ap.add_argument("--sb3", action="store_true", help="also train Stable-Baselines3 PPO for cross-checking")
+    ap.add_argument("--sb3", action="store_true", help="also train sb3-contrib MaskablePPO for cross-checking")
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
+    if args.sb3:
+        from sb3_contrib import MaskablePPO   # fail before training if the optional dependency is missing
     out = Path(args.out); out.mkdir(exist_ok=True)
     Path("models").mkdir(exist_ok=True)
 
     env = FlowTwinEnv(DEFAULT)
-    model, history = train_ppo(env, PPOConfig(total_steps=args.steps, seed=args.seed))
+    cfg = PPOConfig(total_steps=args.steps, seed=args.seed)
+    model, history = train_ppo(env, cfg)
     torch.save(model.state_dict(), "models/ppo.pt")
     (out / "ppo_history.json").write_text(json.dumps(history, indent=1), encoding="utf-8")
 
@@ -40,11 +44,13 @@ def main():
     results["ppo (ours)"] = evaluate(policy_from_model(model), DEFAULT, args.episodes)
 
     if args.sb3:
-        from stable_baselines3 import PPO as SB3PPO
-        sb3 = SB3PPO("MlpPolicy", FlowTwinEnv(DEFAULT), seed=args.seed, n_steps=512, batch_size=64, verbose=0)
+        from gymnasium.wrappers import TransformReward
+        train_env = TransformReward(FlowTwinEnv(DEFAULT), lambda r: r * cfg.reward_scale)   # learning only
+        sb3 = MaskablePPO("MlpPolicy", train_env, seed=args.seed, n_steps=512, batch_size=64, verbose=0)
         sb3.learn(total_timesteps=args.steps)
         sb3.save("models/ppo_sb3")
-        results["ppo (sb3)"] = evaluate(lambda e, o: int(sb3.predict(o, deterministic=True)[0]), DEFAULT, args.episodes)
+        results["maskable ppo (sb3)"] = evaluate(
+            lambda e, o: int(sb3.predict(o, deterministic=True, action_masks=e.action_masks())[0]), DEFAULT, args.episodes)
 
     save_results(results, out, "ppo_vs_heuristics", refs=("edd", "edd_low"))
     print((out / "ppo_vs_heuristics.md").read_text(encoding="utf-8"))
