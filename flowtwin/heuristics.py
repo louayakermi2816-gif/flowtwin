@@ -52,3 +52,7 @@ def random_policy(env: FlowTwinEnv, obs: np.ndarray) -> int:
 
 
 HEURISTICS: Dict[str, Policy] = {"fifo": fifo, "spt": spt, "edd": edd, "edd_low": edd_low, "random": random_policy}
+
+# Rules shown next to the agents in the training scripts' tables. An explicit list keeps those
+# tables unchanged when a rule is added to HEURISTICS for the API.
+TABLE_RULES = ("fifo", "spt", "edd", "edd_low")
