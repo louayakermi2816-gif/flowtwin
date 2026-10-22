@@ -30,16 +30,19 @@ def main():
     ap.add_argument("--episodes", type=int, default=30, help="evaluation episodes")
     ap.add_argument("--sb3", action="store_true", help="also train sb3-contrib MaskablePPO for cross-checking")
     ap.add_argument("--w-tardiness", type=float, default=DEFAULT.w_tardiness, help="reward weight per minute of lateness")
+    ap.add_argument("--dense-tardiness", action="store_true",
+                    help="train on lateness as it accrues (same episode totals); evaluation keeps the standard reward")
     ap.add_argument("--out", default="results")
     ap.add_argument("--models", default="models", help="directory for the trained checkpoints")
     args = ap.parse_args()
     if args.sb3:
         from sb3_contrib import MaskablePPO   # fail before training if the optional dependency is missing
     line_cfg = replace(DEFAULT, w_tardiness=args.w_tardiness)
+    train_cfg = replace(line_cfg, dense_tardiness=args.dense_tardiness)   # learning signal only
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     models = Path(args.models); models.mkdir(parents=True, exist_ok=True)
 
-    env = FlowTwinEnv(line_cfg)
+    env = FlowTwinEnv(train_cfg)
     cfg = PPOConfig(total_steps=args.steps, seed=args.seed)
     model, history = train_ppo(env, cfg)
     torch.save(model.state_dict(), models / "ppo.pt")
@@ -50,7 +53,7 @@ def main():
 
     if args.sb3:
         from gymnasium.wrappers import TransformReward
-        train_env = TransformReward(FlowTwinEnv(line_cfg), lambda r: r * cfg.reward_scale)   # learning only
+        train_env = TransformReward(FlowTwinEnv(train_cfg), lambda r: r * cfg.reward_scale)   # learning only
         sb3 = MaskablePPO("MlpPolicy", train_env, seed=args.seed, n_steps=512, batch_size=64, verbose=0)
         sb3.learn(total_timesteps=args.steps)
         sb3.save(models / "ppo_sb3")

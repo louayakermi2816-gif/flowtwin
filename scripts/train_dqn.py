@@ -27,14 +27,17 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--episodes", type=int, default=30)
     ap.add_argument("--w-tardiness", type=float, default=DEFAULT.w_tardiness, help="reward weight per minute of lateness")
+    ap.add_argument("--dense-tardiness", action="store_true",
+                    help="train on lateness as it accrues (same episode totals); evaluation keeps the standard reward")
     ap.add_argument("--out", default="results")
     ap.add_argument("--models", default="models", help="directory for the trained checkpoint")
     args = ap.parse_args()
     line_cfg = replace(DEFAULT, w_tardiness=args.w_tardiness)
+    train_cfg = replace(line_cfg, dense_tardiness=args.dense_tardiness)   # learning signal only
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     models = Path(args.models); models.mkdir(parents=True, exist_ok=True)
 
-    q, history = train_dqn(FlowTwinEnv(line_cfg), DQNConfig(total_steps=args.steps, seed=args.seed))
+    q, history = train_dqn(FlowTwinEnv(train_cfg), DQNConfig(total_steps=args.steps, seed=args.seed))
     torch.save(q.state_dict(), models / "dqn.pt")
     (out / "dqn_history.json").write_text(json.dumps(history, indent=1), encoding="utf-8")
 

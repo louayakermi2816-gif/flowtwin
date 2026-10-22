@@ -45,6 +45,8 @@ class LineConfig:
     w_tardiness: float = 0.10       # per minute an order finishes late
     w_unmet: float = 2.0            # per unit never produced by the end of the episode
     w_invalid: float = 5.0          # per decision that picked a product with no remaining demand
+    dense_tardiness: bool = False   # charge lateness as it accrues instead of when an order completes
+                                    # (same episode total, denser learning signal)
 
     @property
     def n_stages(self) -> int:

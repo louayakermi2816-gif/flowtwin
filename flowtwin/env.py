@@ -20,6 +20,11 @@ Reward per decision = w_throughput * new_units
                     - w_invalid    * invalid_choice
                     - w_unmet      * unmet_units          (terminal step only)
 
+new_tardiness_minutes is, by default, the lateness of the orders that completed during the
+step (and of the open ones at the end of the shift). With cfg.dense_tardiness it is the
+lateness every overdue order accrued during the step instead: the episode total is the same,
+but the signal arrives while an order is late rather than in one lump when it completes.
+
 The end of the shift is part of the MDP (elapsed time is observed and unmet units are
 penalised), so an episode always *terminates*; it is never truncated.
 """
@@ -102,8 +107,17 @@ class FlowTwinEnv(gym.Env):
 
     def _metrics(self) -> Dict[str, float]:
         ln = self.line
+        lateness = self._accrued_lateness() if self.cfg.dense_tardiness else ln.tardiness
         return {"units": ln.units_out, "changeover": ln.changeover_minutes,
-                "energy": ln.energy, "tardiness": ln.tardiness}
+                "energy": ln.energy, "tardiness": lateness}
+
+    def _accrued_lateness(self) -> float:
+        """Lateness accrued so far: each order counts from its due date until it completes,
+        or until now while it is still open. At the end of an episode this equals
+        line.tardiness, so the dense reward has the same episode total."""
+        ln = self.line
+        return sum(max(0.0, (done if done is not None else ln.now) - due)
+                   for due, done in zip(ln.orders.due, ln.order_done_at))
 
     def _obs(self) -> np.ndarray:
         ln, cfg = self.line, self.cfg
