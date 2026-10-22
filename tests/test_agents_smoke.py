@@ -1,4 +1,8 @@
 """Smoke tests: the PPO and Double-DQN trainers run end to end on a tiny budget."""
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -48,6 +52,14 @@ def _invalid_picks(policy, cfg, seeds=(0, 1)):
             done = term or trunc
         total += info["kpis"]["invalid_actions"]
     return total
+
+
+def test_maskable_ppo_cross_check_runs(tmp_path):
+    pytest.importorskip("sb3_contrib")                  # optional dependency; installed in CI
+    root = Path(__file__).resolve().parents[1]
+    subprocess.run([sys.executable, "scripts/train_ppo.py", "--steps", "256", "--sb3", "--episodes", "1",
+                    "--out", str(tmp_path), "--models", str(tmp_path)], cwd=root, check=True, capture_output=True)
+    assert "| maskable ppo (sb3) |" in (tmp_path / "ppo_vs_heuristics.md").read_text(encoding="utf-8")
 
 
 def test_masked_agents_never_pick_exhausted_products():
