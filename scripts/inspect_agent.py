@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections import Counter
 
-import numpy as np
 import torch
 
 from flowtwin.config import DEFAULT
 from flowtwin.dqn import QNet, policy_from_qnet
 from flowtwin.env import FlowTwinEnv
+from flowtwin.evaluate import policy_behaviour
 from flowtwin.ppo import ActorCritic, policy_from_model
 
 
@@ -34,27 +33,11 @@ def main():
     net.eval()
     policy = policy_from_model(net) if args.agent == "ppo" else policy_from_qnet(net)
 
-    speeds, sequences, edd_order = Counter(), Counter(), 0
-    for i in range(args.episodes):
-        obs, _ = env.reset(seed=args.seed0 + i)
-        edd = tuple(int(p) for p in np.argsort(env.line.orders.due, kind="stable"))
-        seq, done = [], False
-        while not done:
-            action = policy(env, obs)
-            product, speed = env.decode(action)
-            speeds[speed] += 1
-            if not seq or seq[-1] != product:
-                seq.append(product)
-            obs, _, term, trunc, _ = env.step(action)
-            done = term or trunc
-        sequences[tuple(seq)] += 1
-        edd_order += tuple(seq) == edd
-
-    n = sum(speeds.values())
-    print("speed share (low / nominal / high): " + " / ".join(f"{speeds[s] / n:.1%}" for s in range(DEFAULT.n_speeds)))
-    print(f"launch order equals the EDD order on {edd_order}/{args.episodes} episodes")
+    b = policy_behaviour(policy, DEFAULT, args.episodes, args.seed0)
+    print("speed share (low / nominal / high): " + " / ".join(f"{s:.1%}" for s in b["speed_share"]))
+    print(f"launch order equals the EDD order on {b['edd_order']}/{args.episodes} episodes")
     print("most common launch sequences (product indices):")
-    for seq, count in sequences.most_common(5):
+    for seq, count in b["sequences"].most_common(5):
         print(f"  {' -> '.join(map(str, seq))}: {count}")
 
 

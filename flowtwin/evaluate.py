@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import csv
 import json
+from collections import Counter
 from pathlib import Path
-from typing import Callable, Dict, List, Sequence
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import numpy as np
 
@@ -39,6 +40,31 @@ def evaluate(policy: Callable, cfg: LineConfig = DEFAULT, n_episodes: int = 30, 
     return {c: np.array([r[c] for r in rows], dtype=float) for c in KPI_COLUMNS}
 
 
+def policy_behaviour(policy: Callable, cfg: LineConfig = DEFAULT, n_episodes: int = 30, seed0: int = 1000) -> dict:
+    """What a policy does rather than what it earns: the share of batches launched at each
+    speed, and the order in which products are launched compared with the EDD order."""
+    env = FlowTwinEnv(cfg)
+    speeds, sequences, edd_order = Counter(), Counter(), 0
+    for i in range(n_episodes):
+        obs, _ = env.reset(seed=seed0 + i)
+        env.action_space.seed(seed0 + i)
+        edd_sequence = tuple(int(p) for p in np.argsort(env.line.orders.due, kind="stable"))
+        seq, done = [], False
+        while not done:
+            action = policy(env, obs)
+            product, speed = env.decode(action)
+            speeds[speed] += 1
+            if not seq or seq[-1] != product:
+                seq.append(product)
+            obs, _, term, trunc, _ = env.step(action)
+            done = term or trunc
+        sequences[tuple(seq)] += 1
+        edd_order += tuple(seq) == edd_sequence
+    n = sum(speeds.values())
+    return {"speed_share": [speeds[s] / n for s in range(cfg.n_speeds)], "edd_order": edd_order,
+            "episodes": n_episodes, "sequences": sequences}
+
+
 def summarize(results: Dict[str, Dict[str, np.ndarray]]) -> str:
     """results: policy name -> evaluate() output. Returns a Markdown table (mean +/- std)."""
     cols = ["return", "units_out", "throughput_per_h", "changeover_min", "energy", "tardiness_min", "unmet_units",
@@ -63,6 +89,13 @@ def t95(df: int) -> float:
 TIE_TOL = 1e-6   # two policies that schedule a shift identically can differ by float noise (~1e-13)
 
 
+def paired_ci(d: np.ndarray) -> Tuple[float, float]:
+    """Mean of per-seed differences and the half-width of its 95% Student-t confidence interval."""
+    n = len(d)
+    half = t95(n - 1) * d.std(ddof=1) / np.sqrt(n) if n > 1 else float("nan")
+    return float(d.mean()), float(half)
+
+
 def paired_summary(results: Dict[str, Dict[str, np.ndarray]], ref: str,
                    cols: Sequence[str] = ("return", "tardiness_min", "energy")) -> str:
     """Markdown table of per-seed differences (policy - ref): mean ± 95% CI half-width, and the
@@ -77,9 +110,8 @@ def paired_summary(results: Dict[str, Dict[str, np.ndarray]], ref: str,
             continue
         cells = []
         for c in cols:
-            d = res[c] - base[c]
-            half = t95(n - 1) * d.std(ddof=1) / np.sqrt(n) if n > 1 else float("nan")
-            cells.append(f"{d.mean():+.1f} ± {half:.1f}")
+            mean, half = paired_ci(res[c] - base[c])
+            cells.append(f"{mean:+.1f} ± {half:.1f}")
         d_ret = res["return"] - base["return"]
         higher, ties = int((d_ret > TIE_TOL).sum()), int((np.abs(d_ret) <= TIE_TOL).sum())
         lines.append(f"| {name} | " + " | ".join(cells) + f" | {higher}/{n}" + (f" ({ties} tied)" if ties else "") + " |")

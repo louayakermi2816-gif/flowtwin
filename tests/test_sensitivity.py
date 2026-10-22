@@ -10,8 +10,8 @@ import numpy as np
 
 from flowtwin.config import DEFAULT
 from flowtwin.env import FlowTwinEnv
-from flowtwin.evaluate import evaluate
-from flowtwin.heuristics import edd, make_edd_slack
+from flowtwin.evaluate import evaluate, paired_ci, policy_behaviour, t95
+from flowtwin.heuristics import edd, edd_low, make_edd_slack
 from flowtwin.line import Orders
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +48,18 @@ def test_edd_slack_speeds_up_when_late_and_slows_down_with_slack():
     assert _first_decision(make_edd_slack(60), [100.0, 700.0, 710.0]) == (0, 2)    # 20 min late: high
     assert _first_decision(make_edd_slack(60), [500.0, 700.0, 710.0]) == (0, 0)    # 380 min slack: low
     assert _first_decision(make_edd_slack(600), [500.0, 700.0, 710.0]) == (0, 1)   # slack under margin: nominal
+
+
+def test_paired_ci_is_the_student_t_interval():
+    d = np.array([1.0, 2.0, 4.0, 7.0])
+    mean, half = paired_ci(d)
+    assert mean == 3.5 and np.isclose(half, t95(3) * d.std(ddof=1) / 2.0)
+
+
+def test_policy_behaviour_reads_speed_mix_and_launch_order():
+    b = policy_behaviour(edd_low, DEFAULT, n_episodes=3)
+    assert b["speed_share"] == [1.0, 0.0, 0.0]          # every batch at low speed
+    assert b["edd_order"] == 3                           # EDD launches in EDD order by construction
 
 
 def test_default_baselines_reproduce_the_committed_table(tmp_path):
