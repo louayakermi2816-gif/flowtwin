@@ -56,6 +56,9 @@ class ProductionLine:
         self.down = [False] * n
         self.busy = [False] * n
         self._repaired = [self.sim.event() for _ in range(n)]
+        self.downtime = [0.0] * n                              # minutes of completed repairs per stage
+        self._down_since: List[Optional[float]] = [None] * n
+        self.stage_changeover = [0.0] * n                      # changeover minutes per stage
 
         # demand / KPI state
         self.remaining = list(orders.quantity)
@@ -147,6 +150,7 @@ class ProductionLine:
             if self.last_product[i] is not None and self.last_product[i] != p:
                 yield self.sim.timeout(cfg.changeover_time)
                 self.changeover_minutes += cfg.changeover_time
+                self.stage_changeover[i] += cfg.changeover_time
             self.last_product[i] = p
             t = cfg.base_time[i] * cfg.product_time_factor[p] / cfg.speed_factor[s]
             yield self.sim.timeout(t)
@@ -162,9 +166,12 @@ class ProductionLine:
         while True:
             yield self.sim.timeout(self.rng.exponential(cfg.mtbf[i]))
             self.down[i] = True
+            self._down_since[i] = start = self.now
             self._repaired[i] = self.sim.event()
             yield self.sim.timeout(self.rng.exponential(cfg.mttr[i]))
             self.down[i] = False
+            self.downtime[i] += self.now - start
+            self._down_since[i] = None
             self._repaired[i].succeed()
 
     # ------------------------------------------------------------- helpers
@@ -200,4 +207,9 @@ class ProductionLine:
             "invalid_actions": self.invalid_actions,
             "decisions": self.decisions,
             "finished": self.finished,
+            # supervision detail (flowtwin/oee.py): per-stage stops and per-product output
+            "downtime_min": [round(d + (self.now - s if s is not None else 0.0), 1)
+                             for d, s in zip(self.downtime, self._down_since)],
+            "stage_changeover_min": [round(c, 1) for c in self.stage_changeover],
+            "completed": list(self.completed),
         }

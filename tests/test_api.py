@@ -19,6 +19,7 @@ def test_reset_state_step_deviations(client):
     assert len(s["stages"]) == 4 and s["finished"] is False
     st = client.post("/twin/step", json={"policy": "edd"}).json()
     assert "reward" in st and "deviations" in st
+    assert set(st["kpis"]["oee"]) == {"availability", "performance", "quality", "oee"}
     d = client.get("/twin/deviations").json()
     assert d["actual_units"] >= 0
     a = client.post("/policy/act", json={"policy": "spt"}).json()

@@ -26,6 +26,7 @@ from .config import DEFAULT
 from .env import FlowTwinEnv
 from .heuristics import HEURISTICS
 from .mqtt_bridge import KpiPublisher
+from .oee import oee_proxy
 from .plan import Plan, compute_plan, deviations
 
 @asynccontextmanager
@@ -63,6 +64,10 @@ def _load_models():
             _models[name] = m
 
 
+def _kpis_with_oee(kpis: dict) -> dict:
+    return {**kpis, "oee": oee_proxy(kpis, _env.cfg)}
+
+
 def _policy_action(policy: str, obs: np.ndarray, mask: Optional[np.ndarray] = None) -> int:
     if policy in HEURISTICS:
         return HEURISTICS[policy](_env, obs)
@@ -86,7 +91,7 @@ def reset(seed: int = 0):
     global _obs, _plan
     _obs, info = _env.reset(seed=seed)
     _plan = compute_plan(_env.cfg, _env.line.orders)
-    _publisher.publish("kpis", info["kpis"])
+    _publisher.publish("kpis", _kpis_with_oee(info["kpis"]))
     return {"seed": seed, "orders": info["orders"], "plan_completion": _plan.completion, "plan_makespan": _plan.makespan}
 
 
@@ -109,10 +114,11 @@ def step(req: StepRequest):
     action = req.action if req.action is not None else _policy_action(req.policy or "edd", _obs, _env.action_masks())
     _obs, reward, term, trunc, info = _env.step(int(action))
     dev = deviations(_env, _plan)
-    _publisher.publish("kpis", info["kpis"])
+    k = _kpis_with_oee(info["kpis"])
+    _publisher.publish("kpis", k)
     _publisher.publish("deviations", dev)
     return {"action": int(action), "decoded": _env.decode(int(action)), "reward": reward,
-            "terminated": term, "truncated": trunc, "kpis": info["kpis"], "deviations": dev}
+            "terminated": term, "truncated": trunc, "kpis": k, "deviations": dev}
 
 
 @app.post("/twin/run")
@@ -122,13 +128,13 @@ def run(policy: str = "edd", seed: Optional[int] = None):
     total = 0.0
     while not _env.line.finished:
         total += step(StepRequest(policy=policy))["reward"]
-    return {"policy": policy, "return": total, "kpis": _env.line.kpis(), "deviations": deviations(_env, _plan)}
+    return {"policy": policy, "return": total, "kpis": _kpis_with_oee(_env.line.kpis()), "deviations": deviations(_env, _plan)}
 
 
 @app.get("/twin/kpis")
 def kpis():
     _require()
-    return _env.line.kpis()
+    return _kpis_with_oee(_env.line.kpis())
 
 
 @app.get("/twin/deviations")
