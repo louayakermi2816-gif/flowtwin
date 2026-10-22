@@ -1,5 +1,7 @@
 # FlowTwin — RL production scheduling on a digital twin of a packaging line
 
+[![tests](https://github.com/louayakermi2816-gif/flowtwin/actions/workflows/tests.yml/badge.svg)](https://github.com/louayakermi2816-gif/flowtwin/actions/workflows/tests.yml)
+
 FlowTwin is a discrete-event **digital twin** of a multi-product bottling/packaging
 line (filler → capper → labeller → packer) with finite buffers, product
 changeovers, stochastic breakdowns and energy-dependent line speed, exposed as a
@@ -7,9 +9,9 @@ changeovers, stochastic breakdowns and energy-dependent line speed, exposed as a
 next, at which speed* — are taken by dispatching heuristics (FIFO, SPT, EDD) or by
 reinforcement-learning agents written from scratch in **PyTorch** (PPO and
 Double-DQN); `train_ppo.py --sb3` adds a cross-check against Stable-Baselines3
-(sb3-contrib MaskablePPO). A **FastAPI** service exposes the twin, publishes KPIs
-over **MQTT**, and a **Node-RED** flow computes an OEE proxy and raises
-**planned-vs-actual deviation alerts**.
+(sb3-contrib MaskablePPO). A **FastAPI** service exposes the twin and publishes its
+KPIs over **MQTT** to a **Node-RED** dashboard that shows an OEE proxy of the
+bottleneck and **planned-vs-actual deviation alerts**.
 
 Status: **in development** (started September 2026). Results tables in `results/`
 are produced by the scripts below; numbers are only reported once measured.
@@ -17,7 +19,7 @@ are produced by the scripts below; numbers are only reported once measured.
 ```
 SimPy line model ──▶ Gymnasium env ──▶ heuristics / PPO / Double-DQN (PyTorch)
                           │
-                    FastAPI service ──MQTT──▶ Node-RED: OEE proxy, deviation alerts
+                    FastAPI service ──MQTT──▶ Node-RED dashboard: KPIs, OEE proxy, alerts
 ```
 
 ## Why
@@ -33,16 +35,18 @@ planner would use.
 ```bash
 python -m venv .venv && .venv/Scripts/activate        # Windows; use source .venv/bin/activate on Linux/macOS
 pip install -r requirements.txt
-pytest -q                                              # environment, plan, agents, API tests
+pytest -q                                              # environment, agents, API and supervision tests
 
 python scripts/run_baselines.py --episodes 30          # FIFO / SPT / EDD / EDD-low / random -> results/baselines.md
 python scripts/train_ppo.py --steps 100000 --sb3       # our PPO vs sb3-contrib MaskablePPO vs heuristics
 python scripts/train_dqn.py --steps 100000             # Double-DQN vs heuristics
+python scripts/run_sensitivity.py --workers 2          # lateness-weight study -> results/sensitivity.md
+python scripts/inspect_agent.py --agent ppo --model models/ppo.pt   # what an agent actually does
 uvicorn flowtwin.api:app --reload                      # http://127.0.0.1:8000/docs
 ```
 
-Full stack (API + Mosquitto + Node-RED): `docker compose up`, then import
-`node-red/flows.json` at http://localhost:1880.
+Training is deterministic for a given seed and thread count: the commands above
+reproduce the tables in `results/` exactly. The live demo is described below.
 
 ## The twin
 
@@ -71,6 +75,36 @@ obtain the *plan*; the live twin is the *actual*. `GET /twin/deviations` returns
 gap per product and a flow alert when output falls a batch behind plan — the same
 signal a planner watches in a sawmill or packaging plant.
 
+## Live demo
+
+The API, a Mosquitto broker and a Node-RED dashboard run together with Docker
+Compose. Train the agents first (the checkpoints in `models/` are git-ignored):
+
+```bash
+python scripts/train_ppo.py --steps 100000 && python scripts/train_dqn.py --steps 100000
+docker compose up --build -d
+python scripts/demo_feed.py --policy ppo --interval 1    # steps shifts through the API
+```
+
+- **Dashboard** at http://localhost:1880/dashboard: units out, throughput, energy
+  per unit, lateness, the OEE proxy and its two factors, throughput over the shift
+  and the current alerts against plan. Node-RED editor at http://localhost:1880,
+  API docs at http://localhost:8000/docs.
+- The API serves the trained agents **greedily, as they were evaluated**: on
+  evaluation shift 1000 the containerised PPO reproduces its evaluated result
+  (return 416.5596, 686 units, 285.5 min of lateness) to the last digit.
+
+**OEE proxy** (`flowtwin/oee.py`), defined on the bottleneck (the packer), over the
+elapsed shift time, with no planned stops:
+availability = (elapsed − packer downtime − packer changeover) / elapsed;
+performance = ideal packer time at the fastest speed for the units produced / run time;
+quality = 1, since scrap is not modelled.
+
+If your network intercepts HTTPS (antivirus "HTTPS scanning" or a corporate proxy),
+pip and npm inside the image builds fail with `CERTIFICATE_VERIFY_FAILED`: add the
+interceptor's root certificate to the build or switch the scanning off. On the host,
+`pip install --use-feature=truststore ...` uses the operating system's certificates.
+
 ## Results
 
 30 evaluation episodes (seeds 1000–1029). Every policy sees the same orders and the
@@ -88,17 +122,20 @@ are identical); `results/baselines.md` adds the random policy.
 | edd | 340.1 ± 40.4 | 663.7 ± 74.4 | 87.2 ± 4.7 | 64.0 ± 0.0 | 1924.8 ± 215.8 | 29.1 ± 67.5 | 0.0 ± 0.0 | 0.0 ± 0.0 |
 | edd_low | 418.8 ± 46.8 | 663.7 ± 74.4 | 70.9 ± 3.5 | 64.0 ± 0.0 | 1347.4 ± 151.0 | 108.0 ± 123.5 | 0.0 ± 0.0 | 0.0 ± 0.0 |
 | ppo (ours) | 411.4 ± 47.8 | 663.7 ± 74.4 | 70.8 ± 3.6 | 64.0 ± 0.0 | 1347.4 ± 151.0 | 182.7 ± 122.1 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+| maskable ppo (sb3) | 411.1 ± 45.0 | 663.7 ± 74.4 | 71.0 ± 3.5 | 64.0 ± 0.0 | 1347.4 ± 151.0 | 184.9 ± 142.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
 | double-dqn | 390.7 ± 55.5 | 663.7 ± 74.4 | 69.9 ± 4.0 | 90.7 ± 28.7 | 1353.6 ± 154.5 | 247.0 ± 148.4 | 0.0 ± 0.0 | 0.0 ± 0.0 |
 
 | paired vs edd | Δ return | Δ tardiness_min | Δ energy | higher return |
 |---|---|---|---|---|
 | edd_low | +78.7 ± 2.9 | +78.9 ± 25.2 | -577.4 ± 24.6 | 30/30 |
 | ppo (ours) | +71.3 ± 4.2 | +153.5 ± 35.1 | -577.4 ± 24.6 | 30/30 |
+| maskable ppo (sb3) | +71.0 ± 3.7 | +155.7 ± 41.0 | -577.4 ± 24.6 | 30/30 |
 | double-dqn | +50.6 ± 9.1 | +217.8 ± 45.9 | -571.2 ± 23.5 | 29/30 |
 
 | paired vs edd_low | Δ return | Δ tardiness_min | Δ energy | higher return |
 |---|---|---|---|---|
 | ppo (ours) | -7.5 ± 3.0 | +74.7 ± 29.9 | +0.0 ± 0.0 | 2/30 (6 tied) |
+| maskable ppo (sb3) | -7.7 ± 3.1 | +76.9 ± 30.9 | +0.0 ± 0.0 | 1/30 (7 tied) |
 | double-dqn | -28.2 ± 8.3 | +139.0 ± 43.3 | +6.2 ± 3.1 | 1/30 |
 
 **Reading the results**
@@ -116,12 +153,13 @@ are identical); `results/baselines.md` adds the random policy.
 - **Double-DQN** beats EDD by +50.6 ± 9.1 (29/30) and ends 28.2 ± 8.3 below `edd_low`:
   98.6 % of batches at low speed, mostly the same 2 → 0 → 1 order, plus extra product
   switches (changeover 90.7 vs 64.0 min).
-- **MaskablePPO (sb3-contrib)**: the like-for-like cross-check (same masks, same reward
-  scale) is built into `train_ppo.py --sb3` but has not been run yet; it needs `sb3-contrib`
-  installed.
+- **MaskablePPO (sb3-contrib)**, the library cross-check trained with the same masks
+  and reward scale, scores 411.1 ± 45.0, within 0.3 of our PPO (paired against EDD:
+  +71.0 ± 3.7 against +71.3 ± 4.2), which supports the from-scratch implementation. It
+  learns the same kind of policy: its results equal FIFO at low speed on all 30 episodes.
 - No agent uses the due dates. With `w_tardiness = 0.10` lateness is about 1 % of the
   return, so a better sequence is worth a few points per episode against an
-  episode-to-episode std of 40–56.
+  episode-to-episode std of 40–56. The study below prices lateness higher.
 
 **Training-seed robustness** (same evaluation episodes, `--seed 1` / `--seed 2`):
 
@@ -136,6 +174,31 @@ are identical); `results/baselines.md` adds the random policy.
 
 PPO seeds 0 and 1 converge to the same fixed schedule (different weights, identical
 actions), hence identical rows; seed 2 learns the order 1 → 0 → 2.
+
+### Objective sensitivity (`results/sensitivity.md`)
+
+Does RL beat the rules once lateness costs more? A pre-registered study (protocol and
+decision rule committed before any of its runs, in `02f0b9d`) re-ran the rules and both
+agents, 3 training seeds each, at three lateness weights. Each agent is compared with
+the best rule chosen on separate training seeds, including `edd_slack`, which keeps the
+EDD order but speeds up an order projected to be late (margin tuned on training seeds).
+An agent "beats the rules" if its paired 95% CI against that rule is above 0 for at
+least 2 of its 3 seeds. `python scripts/run_sensitivity.py --workers 2` reproduces it.
+
+| w_tardiness | best rule, evaluation return | PPO (ours), 3 seeds | Double-DQN, 3 seeds | beats the rules |
+|---|---|---|---|---|
+| 0.1 | edd_low: 418.8 ± 46.8 | 410.9 to 411.4 | 373.2 to 390.7 | neither (0/3 seeds each) |
+| 1 | edd: 313.9 ± 66.9 | 255.5 to 268.1 | 177.1 to 212.3 | neither (0/3 seeds each) |
+| 2.5 | edd_slack(360): 284.7 ± 127.8 | 135.5 to 159.0 | −12.9 to 101.6 | neither (0/3 seeds each) |
+
+- The agents **do learn the speed lever**: PPO runs 100 % of batches at low speed at
+  weight 0.1 and none at 2.5 (69–92 % nominal, 8–31 % high).
+- They **never learn to sequence by due date**: their launch order matches the EDD order
+  on 0 to 6 of 30 episodes at every weight, about what a fixed order gets by chance
+  (1 in 6). At weight 2.5 that costs PPO 62–73 min of lateness against 14.9 for the
+  best rule. The due dates are already in the observation, so this is a learning
+  problem, not missing information.
+- **Verdict:** under this protocol neither agent beats the strongest rule at any weight.
 
 **First runs and what was fixed.** The first 100k-step runs (commit `fd114d2`) lost to
 EDD: PPO 297.3 ± 36.5, Double-DQN 335.2 ± 57.1; SB3 PPO reached 382.3 ± 44.7 only by
@@ -153,22 +216,24 @@ seeded, which changed its row in `results/baselines.md`.
 flowtwin/config.py      line parameters and reward weights
 flowtwin/line.py        SimPy production line (stages, buffers, breakdowns, loader handshake)
 flowtwin/env.py         Gymnasium environment
-flowtwin/heuristics.py  FIFO, SPT, EDD, EDD at low speed, random
-flowtwin/ppo.py         PPO (actor-critic, GAE, clipped objective)
-flowtwin/dqn.py         Double-DQN (replay buffer, target network)
+flowtwin/heuristics.py  FIFO, SPT, EDD, EDD at low speed, slack-aware EDD, random
+flowtwin/ppo.py         PPO (actor-critic, GAE, clipped objective, action masking)
+flowtwin/dqn.py         Double-DQN (replay buffer, target network, action masking)
 flowtwin/plan.py        planned-vs-actual deviations
-flowtwin/evaluate.py    seeded evaluation + Markdown/CSV tables
+flowtwin/evaluate.py    seeded evaluation, paired confidence intervals, Markdown/CSV tables
+flowtwin/oee.py         OEE proxy of the bottleneck
 flowtwin/api.py         FastAPI service; flowtwin/mqtt_bridge.py MQTT publisher
-node-red/flows.json     OEE proxy + deviation alerts
-scripts/                run_baselines.py, train_ppo.py, train_dqn.py, inspect_agent.py
-tests/                  env / plan / agents / API tests
+node-red/               dashboard flow (flows.json) and its image (Dockerfile)
+scripts/                run_baselines, train_ppo, train_dqn, run_sensitivity, inspect_agent, demo_feed
+tests/                  env, agents, API, sensitivity and supervision tests
+.github/workflows/      CI: the tests run on every push
 ```
 
 ## Limitations (known, on purpose)
 
 - Breakdowns block a stage *between* units, not mid-unit.
 - One order per product per episode; no order arrivals during the day.
-- The OEE in Node-RED is a proxy (availability × performance) — quality is not modelled.
+- The OEE is a proxy measured on the bottleneck; quality is not modelled (no scrap).
 - Agents are single-environment, CPU-only; no vectorised rollouts yet.
 - The main tables use one training run per agent (100k decisions); three training seeds
   are reported above. PPO's training return plateaus after about 30k decisions.
