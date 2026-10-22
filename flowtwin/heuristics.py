@@ -11,7 +11,7 @@ import numpy as np
 
 from .env import FlowTwinEnv
 
-LOW_SPEED, NOMINAL_SPEED = 0, 1
+LOW_SPEED, NOMINAL_SPEED, HIGH_SPEED = 0, 1, 2
 
 Policy = Callable[[FlowTwinEnv, np.ndarray], int]
 
@@ -45,6 +45,23 @@ def edd_low(env: FlowTwinEnv, obs: np.ndarray) -> int:
     """Earliest due date first, at the lowest line speed."""
     p, _ = env.decode(edd(env, obs))
     return env.encode(p, LOW_SPEED)
+
+
+def make_edd_slack(margin: float) -> Policy:
+    """EDD order with a slack-aware line speed, the strong baseline once lateness is priced.
+    The order about to be launched is projected to finish at now + (units already in the line
+    + its remaining units) x packer time per unit at nominal speed. Projected late -> high speed;
+    slack above `margin` minutes -> low speed; otherwise nominal."""
+    def edd_slack(env: FlowTwinEnv, obs: np.ndarray) -> int:
+        ln, cfg = env.line, env.cfg
+        p, _ = env.decode(edd(env, obs))
+        wip = len(ln.inlet.items) + sum(len(b.items) for b in ln.buffers)
+        finish = ln.now + (wip + ln.remaining[p]) * cfg.base_time[-1] * cfg.product_time_factor[p]
+        slack = ln.orders.due[p] - finish
+        speed = HIGH_SPEED if slack < 0 else (LOW_SPEED if slack > margin else NOMINAL_SPEED)
+        return env.encode(p, speed)
+    edd_slack.__name__ = f"edd_slack_{margin:g}"
+    return edd_slack
 
 
 def random_policy(env: FlowTwinEnv, obs: np.ndarray) -> int:

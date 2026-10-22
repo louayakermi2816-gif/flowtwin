@@ -9,8 +9,10 @@ from pathlib import Path
 import numpy as np
 
 from flowtwin.config import DEFAULT
+from flowtwin.env import FlowTwinEnv
 from flowtwin.evaluate import evaluate
-from flowtwin.heuristics import edd
+from flowtwin.heuristics import edd, make_edd_slack
+from flowtwin.line import Orders
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,6 +35,19 @@ def test_baselines_script_takes_the_lateness_weight(tmp_path):
     saved = json.loads((tmp_path / "baselines.json").read_text(encoding="utf-8"))
     expected = evaluate(edd, replace(DEFAULT, w_tardiness=2.5), n_episodes=2)["return"]
     assert np.allclose(saved["edd"]["return"], expected)
+
+
+def _first_decision(policy, due):
+    env = FlowTwinEnv(DEFAULT, Orders(quantity=[200, 200, 200], due=due))
+    obs, _ = env.reset(seed=0)
+    return env.decode(policy(env, obs))
+
+
+def test_edd_slack_speeds_up_when_late_and_slows_down_with_slack():
+    # P0 is due first; 200 units at 0.6 min/unit on the packer -> projected finish at 120 min
+    assert _first_decision(make_edd_slack(60), [100.0, 700.0, 710.0]) == (0, 2)    # 20 min late: high
+    assert _first_decision(make_edd_slack(60), [500.0, 700.0, 710.0]) == (0, 0)    # 380 min slack: low
+    assert _first_decision(make_edd_slack(600), [500.0, 700.0, 710.0]) == (0, 1)   # slack under margin: nominal
 
 
 def test_default_baselines_reproduce_the_committed_table(tmp_path):
