@@ -1,11 +1,506 @@
 [
-  {"id": "ft_tab", "type": "tab", "label": "FlowTwin supervision", "disabled": false, "info": "Planned-vs-actual flow, OEE and deviation alerts from the FlowTwin API (MQTT topics flowtwin/kpis and flowtwin/deviations)."},
-  {"id": "ft_broker", "type": "mqtt-broker", "name": "mosquitto", "broker": "mosquitto", "port": "1883", "clientid": "", "autoConnect": true, "usetls": false, "protocolVersion": "4", "keepalive": "60", "cleansession": true},
-  {"id": "ft_in_kpis", "type": "mqtt in", "z": "ft_tab", "name": "flowtwin/kpis", "topic": "flowtwin/kpis", "qos": "0", "datatype": "json", "broker": "ft_broker", "x": 140, "y": 80, "wires": [["ft_oee", "ft_dbg_kpis"]]},
-  {"id": "ft_in_dev", "type": "mqtt in", "z": "ft_tab", "name": "flowtwin/deviations", "topic": "flowtwin/deviations", "qos": "0", "datatype": "json", "broker": "ft_broker", "x": 160, "y": 200, "wires": [["ft_alert"]]},
-  {"id": "ft_oee", "type": "function", "z": "ft_tab", "name": "OEE proxy", "func": "// Availability x Performance proxy from twin KPIs.\n// Nominal rate: slowest stage (packer, 0.6 min/unit) -> 100 units/h.\nconst k = msg.payload;\nconst nominalRate = 100;\nconst performance = Math.min(1, k.throughput_per_h / nominalRate);\nconst availability = k.time_min > 0 ? Math.max(0, 1 - k.changeover_min / k.time_min) : 1;\nmsg.payload = {time_min: k.time_min, units_out: k.units_out, throughput_per_h: k.throughput_per_h, availability: +availability.toFixed(3), performance: +performance.toFixed(3), oee_proxy: +(availability * performance).toFixed(3), energy: k.energy, tardiness_min: k.tardiness_min};\nreturn msg;", "outputs": 1, "x": 360, "y": 80, "wires": [["ft_dbg_oee"]]},
-  {"id": "ft_alert", "type": "function", "z": "ft_tab", "name": "deviation alerts", "func": "const d = msg.payload;\nconst alerts = d.products.filter(p => p.alert).map(p => `product ${p.product} late by ${p.deviation_min} min vs plan`);\nif (d.flow_alert) alerts.push(`flow behind plan by ${-d.flow_gap_units} units`);\nif (alerts.length === 0) return null;\nmsg.payload = {time_min: d.time_min, alerts};\nreturn msg;", "outputs": 1, "x": 380, "y": 200, "wires": [["ft_dbg_alert"]]},
-  {"id": "ft_dbg_kpis", "type": "debug", "z": "ft_tab", "name": "raw KPIs", "active": false, "tosidebar": true, "complete": "payload", "x": 360, "y": 140, "wires": []},
-  {"id": "ft_dbg_oee", "type": "debug", "z": "ft_tab", "name": "OEE", "active": true, "tosidebar": true, "complete": "payload", "x": 560, "y": 80, "wires": []},
-  {"id": "ft_dbg_alert", "type": "debug", "z": "ft_tab", "name": "ALERT", "active": true, "tosidebar": true, "complete": "payload", "x": 580, "y": 200, "wires": []}
+    {
+        "id": "ft_tab",
+        "type": "tab",
+        "label": "FlowTwin supervision",
+        "disabled": false,
+        "info": "KPIs, the bottleneck OEE proxy and planned-vs-actual alerts from the FlowTwin API (MQTT topics flowtwin/kpis and flowtwin/deviations), shown on the dashboard at /dashboard."
+    },
+    {
+        "id": "ft_broker",
+        "type": "mqtt-broker",
+        "name": "mosquitto",
+        "broker": "mosquitto",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true
+    },
+    {
+        "id": "ft_ui_base",
+        "type": "ui-base",
+        "name": "FlowTwin",
+        "path": "/dashboard",
+        "includeClientData": true,
+        "acceptsClientConfig": [
+            "ui-notification",
+            "ui-control"
+        ]
+    },
+    {
+        "id": "ft_ui_theme",
+        "type": "ui-theme",
+        "name": "FlowTwin",
+        "colors": {
+            "surface": "#16202a",
+            "primary": "#2763a8",
+            "bgPage": "#eef1f4",
+            "groupBg": "#ffffff",
+            "groupOutline": "#d3dae1"
+        }
+    },
+    {
+        "id": "ft_ui_page",
+        "type": "ui-page",
+        "name": "Packaging line",
+        "ui": "ft_ui_base",
+        "path": "/line",
+        "icon": "factory",
+        "layout": "grid",
+        "theme": "ft_ui_theme",
+        "order": 1,
+        "className": "",
+        "visible": "true",
+        "disabled": false
+    },
+    {
+        "id": "ft_grp_shift",
+        "type": "ui-group",
+        "name": "Shift",
+        "page": "ft_ui_page",
+        "width": "12",
+        "height": "1",
+        "order": 1,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false"
+    },
+    {
+        "id": "ft_grp_oee",
+        "type": "ui-group",
+        "name": "OEE proxy at the packer (bottleneck)",
+        "page": "ft_ui_page",
+        "width": "12",
+        "height": "1",
+        "order": 2,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false"
+    },
+    {
+        "id": "ft_grp_thr",
+        "type": "ui-group",
+        "name": "Throughput over the shift",
+        "page": "ft_ui_page",
+        "width": "6",
+        "height": "1",
+        "order": 3,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false"
+    },
+    {
+        "id": "ft_grp_alerts",
+        "type": "ui-group",
+        "name": "Alerts against plan",
+        "page": "ft_ui_page",
+        "width": "6",
+        "height": "1",
+        "order": 4,
+        "showTitle": true,
+        "className": "",
+        "visible": "true",
+        "disabled": "false"
+    },
+    {
+        "id": "ft_in_kpis",
+        "type": "mqtt in",
+        "z": "ft_tab",
+        "name": "flowtwin/kpis",
+        "topic": "flowtwin/kpis",
+        "qos": "0",
+        "datatype": "json",
+        "broker": "ft_broker",
+        "x": 140,
+        "y": 120,
+        "wires": [
+            [
+                "ft_route",
+                "ft_dbg_kpis"
+            ]
+        ]
+    },
+    {
+        "id": "ft_in_dev",
+        "type": "mqtt in",
+        "z": "ft_tab",
+        "name": "flowtwin/deviations",
+        "topic": "flowtwin/deviations",
+        "qos": "0",
+        "datatype": "json",
+        "broker": "ft_broker",
+        "x": 160,
+        "y": 520,
+        "wires": [
+            [
+                "ft_alert"
+            ]
+        ]
+    },
+    {
+        "id": "ft_route",
+        "type": "function",
+        "z": "ft_tab",
+        "name": "route KPIs to widgets",
+        "func": "// The twin computes the OEE proxy (flowtwin/oee.py) and publishes it with the KPIs;\n// this node only routes values to the dashboard widgets.\nconst k = msg.payload;\nconst o = k.oee || {};\nconst pct = v => Math.round(1000 * (v || 0)) / 10;\nconst last = context.get('t');\ncontext.set('t', k.time_min);\nconst point = {payload: {series: 'throughput', t: k.time_min, thr: k.throughput_per_h}};\nconst chart = (last !== undefined && k.time_min < last) ? [{payload: []}, point] : point;  // new shift: clear first\nreturn [\n    {payload: k.units_out},\n    {payload: k.throughput_per_h},\n    {payload: k.units_out > 0 ? Math.round(100 * k.energy / k.units_out) / 100 : 0},\n    {payload: k.tardiness_min},\n    {payload: pct(o.oee)},\n    {payload: pct(o.availability)},\n    {payload: pct(o.performance)},\n    chart\n];",
+        "outputs": 8,
+        "x": 420,
+        "y": 240,
+        "wires": [
+            [
+                "ft_txt_units"
+            ],
+            [
+                "ft_txt_thr"
+            ],
+            [
+                "ft_txt_energy"
+            ],
+            [
+                "ft_txt_late"
+            ],
+            [
+                "ft_g_oee"
+            ],
+            [
+                "ft_g_av"
+            ],
+            [
+                "ft_g_perf"
+            ],
+            [
+                "ft_chart"
+            ]
+        ]
+    },
+    {
+        "id": "ft_alert",
+        "type": "function",
+        "z": "ft_tab",
+        "name": "deviation alerts",
+        "func": "// Current planned-vs-actual alerts as table rows; a change in alerts also goes to the debug sidebar.\nconst d = msg.payload;\nconst rows = d.products.filter(p => p.alert).map(p => ({order: 'P' + p.product, issue: 'late by ' + p.deviation_min + ' min vs plan'}));\nif (d.flow_alert) rows.push({order: 'line', issue: (-d.flow_gap_units) + ' units behind plan'});\nconst changed = JSON.stringify(rows) !== JSON.stringify(context.get('rows') || []);\ncontext.set('rows', rows);\nreturn [{payload: rows}, rows.length && changed ? {payload: {time_min: d.time_min, alerts: rows}} : null];",
+        "outputs": 2,
+        "x": 400,
+        "y": 520,
+        "wires": [
+            [
+                "ft_table"
+            ],
+            [
+                "ft_dbg_alert"
+            ]
+        ]
+    },
+    {
+        "id": "ft_txt_units",
+        "type": "ui-text",
+        "z": "ft_tab",
+        "group": "ft_grp_shift",
+        "order": 1,
+        "width": "3",
+        "height": "1",
+        "name": "Units out",
+        "label": "Units out",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#16202a",
+        "className": "",
+        "x": 760,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "ft_txt_thr",
+        "type": "ui-text",
+        "z": "ft_tab",
+        "group": "ft_grp_shift",
+        "order": 2,
+        "width": "3",
+        "height": "1",
+        "name": "Throughput (units/h)",
+        "label": "Throughput (units/h)",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#16202a",
+        "className": "",
+        "x": 760,
+        "y": 120,
+        "wires": []
+    },
+    {
+        "id": "ft_txt_energy",
+        "type": "ui-text",
+        "z": "ft_tab",
+        "group": "ft_grp_shift",
+        "order": 3,
+        "width": "3",
+        "height": "1",
+        "name": "Energy per unit",
+        "label": "Energy per unit",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#16202a",
+        "className": "",
+        "x": 760,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "ft_txt_late",
+        "type": "ui-text",
+        "z": "ft_tab",
+        "group": "ft_grp_shift",
+        "order": 4,
+        "width": "3",
+        "height": "1",
+        "name": "Lateness (order-min)",
+        "label": "Lateness (order-min)",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "style": false,
+        "font": "",
+        "fontSize": 16,
+        "color": "#16202a",
+        "className": "",
+        "x": 760,
+        "y": 200,
+        "wires": []
+    },
+    {
+        "id": "ft_g_oee",
+        "type": "ui-gauge",
+        "z": "ft_tab",
+        "name": "OEE proxy",
+        "group": "ft_grp_oee",
+        "order": 1,
+        "width": "4",
+        "height": "4",
+        "gtype": "gauge-half",
+        "gstyle": "needle",
+        "title": "OEE proxy",
+        "units": "",
+        "icon": "",
+        "prefix": "",
+        "suffix": "%",
+        "segments": [
+            {
+                "from": "0",
+                "color": "#c23b36"
+            },
+            {
+                "from": "60",
+                "color": "#a86f02"
+            },
+            {
+                "from": "85",
+                "color": "#23824f"
+            }
+        ],
+        "min": "0",
+        "max": "100",
+        "sizeThickness": "0",
+        "sizeGap": "0",
+        "sizeKeyThickness": "32",
+        "styleRounded": false,
+        "styleGlow": false,
+        "className": "",
+        "x": 760,
+        "y": 260,
+        "wires": []
+    },
+    {
+        "id": "ft_g_av",
+        "type": "ui-gauge",
+        "z": "ft_tab",
+        "name": "Availability",
+        "group": "ft_grp_oee",
+        "order": 2,
+        "width": "4",
+        "height": "4",
+        "gtype": "gauge-half",
+        "gstyle": "needle",
+        "title": "Availability",
+        "units": "",
+        "icon": "",
+        "prefix": "",
+        "suffix": "%",
+        "segments": [
+            {
+                "from": "0",
+                "color": "#c23b36"
+            },
+            {
+                "from": "60",
+                "color": "#a86f02"
+            },
+            {
+                "from": "85",
+                "color": "#23824f"
+            }
+        ],
+        "min": "0",
+        "max": "100",
+        "sizeThickness": "0",
+        "sizeGap": "0",
+        "sizeKeyThickness": "32",
+        "styleRounded": false,
+        "styleGlow": false,
+        "className": "",
+        "x": 760,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "ft_g_perf",
+        "type": "ui-gauge",
+        "z": "ft_tab",
+        "name": "Performance",
+        "group": "ft_grp_oee",
+        "order": 3,
+        "width": "4",
+        "height": "4",
+        "gtype": "gauge-half",
+        "gstyle": "needle",
+        "title": "Performance",
+        "units": "",
+        "icon": "",
+        "prefix": "",
+        "suffix": "%",
+        "segments": [
+            {
+                "from": "0",
+                "color": "#c23b36"
+            },
+            {
+                "from": "60",
+                "color": "#a86f02"
+            },
+            {
+                "from": "85",
+                "color": "#23824f"
+            }
+        ],
+        "min": "0",
+        "max": "100",
+        "sizeThickness": "0",
+        "sizeGap": "0",
+        "sizeKeyThickness": "32",
+        "styleRounded": false,
+        "styleGlow": false,
+        "className": "",
+        "x": 760,
+        "y": 340,
+        "wires": []
+    },
+    {
+        "id": "ft_chart",
+        "type": "ui-chart",
+        "z": "ft_tab",
+        "group": "ft_grp_thr",
+        "name": "throughput",
+        "label": "Throughput (units/h)",
+        "order": 1,
+        "chartType": "line",
+        "category": "series",
+        "categoryType": "property",
+        "xAxisLabel": "shift minute",
+        "xAxisProperty": "t",
+        "xAxisPropertyType": "property",
+        "xAxisType": "linear",
+        "xAxisFormat": "",
+        "xAxisFormatType": "auto",
+        "yAxisLabel": "units/h",
+        "yAxisProperty": "thr",
+        "yAxisPropertyType": "property",
+        "ymin": "0",
+        "ymax": "",
+        "action": "append",
+        "stackSeries": false,
+        "pointShape": "circle",
+        "pointRadius": 2,
+        "showLegend": false,
+        "removeOlder": 1,
+        "removeOlderUnit": "86400",
+        "removeOlderPoints": "1000",
+        "colors": [
+            "#2763a8"
+        ],
+        "textColor": [
+            "#666666"
+        ],
+        "textColorDefault": true,
+        "gridColor": [
+            "#e5e5e5"
+        ],
+        "gridColorDefault": true,
+        "width": 6,
+        "height": "5",
+        "className": "",
+        "x": 750,
+        "y": 400,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "ft_table",
+        "type": "ui-table",
+        "z": "ft_tab",
+        "group": "ft_grp_alerts",
+        "name": "current alerts",
+        "label": "Current alerts",
+        "action": "replace",
+        "order": 1,
+        "width": 6,
+        "height": 0,
+        "maxrows": 0,
+        "passthru": false,
+        "autocols": true,
+        "selectionType": "none",
+        "columns": [],
+        "x": 740,
+        "y": 500,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "ft_dbg_kpis",
+        "type": "debug",
+        "z": "ft_tab",
+        "name": "raw KPIs",
+        "active": false,
+        "tosidebar": true,
+        "complete": "payload",
+        "x": 400,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "ft_dbg_alert",
+        "type": "debug",
+        "z": "ft_tab",
+        "name": "ALERT",
+        "active": true,
+        "tosidebar": true,
+        "complete": "payload",
+        "x": 730,
+        "y": 560,
+        "wires": []
+    }
 ]
