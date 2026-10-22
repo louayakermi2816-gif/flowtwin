@@ -4,18 +4,20 @@ services:
     environment:
       MQTT_HOST: mosquitto
       MQTT_TOPIC: flowtwin
+      MODEL_PPO: /app/models/ppo.pt
+      MODEL_DQN: /app/models/dqn.pt
+    volumes:
+      - ./models:/app/models:ro     # trained checkpoints (train them first; git-ignored)
     ports: ["8000:8000"]
     depends_on: [mosquitto]
 
   mosquitto:
-    image: eclipse-mosquitto:2
+    image: eclipse-mosquitto:2.0.22
     ports: ["1883:1883"]
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
 
   nodered:
-    image: nodered/node-red:latest
+    build: ./node-red
     ports: ["1880:1880"]
-    volumes:
-      - ./node-red:/data/projects/flowtwin:ro
     depends_on: [mosquitto]
