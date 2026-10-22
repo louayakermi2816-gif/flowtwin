@@ -72,7 +72,7 @@ def _policy_action(policy: str, obs: np.ndarray, mask: Optional[np.ndarray] = No
     if policy in HEURISTICS:
         return HEURISTICS[policy](_env, obs)
     if policy in _models:
-        return _models[policy].act(obs, mask=mask)
+        return _models[policy].act(obs, deterministic=True, mask=mask)   # greedy, as the agents were evaluated
     raise HTTPException(400, f"unknown policy '{policy}'. Available: {list(HEURISTICS) + list(_models)}")
 
 

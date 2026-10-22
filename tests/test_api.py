@@ -30,3 +30,16 @@ def test_run_to_completion(client):
     out = client.post("/twin/run", params={"policy": "fifo", "seed": 4}).json()
     assert out["kpis"]["finished"] is True
     assert client.post("/twin/step", json={"policy": "edd"}).status_code == 409
+
+
+def test_served_agents_act_greedily(client):
+    torch = pytest.importorskip("torch")
+    from flowtwin.ppo import ActorCritic
+    torch.manual_seed(0)
+    api._models["ppo"] = ActorCritic(api._env.observation_space.shape[0], api._env.action_space.n)
+    try:
+        client.post("/twin/reset", params={"seed": 3})
+        actions = {client.post("/policy/act", json={"policy": "ppo"}).json()["action"] for _ in range(20)}
+        assert len(actions) == 1          # same state, same action: greedy, as in the evaluation
+    finally:
+        api._models.pop("ppo", None)
