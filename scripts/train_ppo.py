@@ -20,6 +20,7 @@ from flowtwin.env import FlowTwinEnv
 from flowtwin.evaluate import evaluate, save_results
 from flowtwin.heuristics import HEURISTICS, TABLE_RULES, make_edd_slack
 from flowtwin.imitation import CloneConfig, warm_start
+from flowtwin.order_actions import OrderFirstEnv, order_line_policy
 from flowtwin.ppo import PPOConfig, policy_from_model, train_ppo
 from flowtwin.rule_actions import RULES, SPEED_ONLY, RuleSelectionEnv, line_policy
 
@@ -38,6 +39,8 @@ def main():
     actions.add_argument("--rule-actions", action="store_true",
                          help="each action picks a dispatching rule (FIFO/SPT/EDD) and a speed instead of a product")
     actions.add_argument("--speed-only", action="store_true", help="EDD picks the product; each action is only the line speed")
+    actions.add_argument("--order-first", action="store_true",
+                         help="the first decision of a shift picks the launch order, every later one the line speed")
     ap.add_argument("--warm-start-slack", type=float, metavar="MARGIN",
                     help="before PPO, behaviour-clone edd_slack(MARGIN) (flowtwin.imitation); product actions only")
     ap.add_argument("--clone-episodes", type=int, default=CloneConfig.episodes, help="demonstration shifts for the warm start")
@@ -45,9 +48,9 @@ def main():
     ap.add_argument("--models", default="models", help="directory for the trained checkpoints")
     args = ap.parse_args()
     rules = RULES if args.rule_actions else SPEED_ONLY if args.speed_only else None
-    if args.sb3 and rules:
-        ap.error("--rule-actions and --speed-only are not wired into the --sb3 cross-check")
-    if args.warm_start_slack is not None and (rules or args.sb3):
+    if args.sb3 and (rules or args.order_first):
+        ap.error("--rule-actions, --speed-only and --order-first are not wired into the --sb3 cross-check")
+    if args.warm_start_slack is not None and (rules or args.order_first or args.sb3):
         ap.error("--warm-start-slack works with product actions and without --sb3")
     if args.sb3:
         from sb3_contrib import MaskablePPO   # fail before training if the optional dependency is missing
@@ -59,6 +62,8 @@ def main():
     env = FlowTwinEnv(train_cfg)
     if rules:
         env = RuleSelectionEnv(env, rules)
+    elif args.order_first:
+        env = OrderFirstEnv(env)
     cfg = PPOConfig(total_steps=args.steps, seed=args.seed)
     start, before_rl = None, None
     if args.warm_start_slack is not None:
@@ -75,6 +80,8 @@ def main():
     if before_rl is not None:
         results["ppo warm start (before rl)"] = before_rl
     agent = line_policy(policy_from_model(model, masked=False), rules) if rules else policy_from_model(model)
+    if args.order_first:
+        agent = order_line_policy(lambda o, m: model.act(o, deterministic=True, mask=m))
     results["ppo (ours)"] = evaluate(agent, line_cfg, args.episodes)
 
     if args.sb3:

@@ -20,6 +20,7 @@ from flowtwin.dqn import QNet, policy_from_qnet
 from flowtwin.env import FlowTwinEnv
 from flowtwin.evaluate import policy_behaviour
 from flowtwin.ppo import ActorCritic, policy_from_model
+from flowtwin.order_actions import OrderFirstEnv, order_line_policy
 from flowtwin.rule_actions import RULES, SPEED_ONLY, RuleSelectionEnv, to_line_action
 
 SPEEDS = ("low", "nominal", "high")
@@ -54,11 +55,14 @@ def main():
     actions = ap.add_mutually_exclusive_group()
     actions.add_argument("--rule-actions", action="store_true", help="the agent was trained with --rule-actions")
     actions.add_argument("--speed-only", action="store_true", help="the agent was trained with --speed-only")
+    actions.add_argument("--order-first", action="store_true", help="the agent was trained with --order-first")
     ap.add_argument("--trace", type=int, metavar="SEED", help="also print every decision of this shift")
     args = ap.parse_args()
     rules = RULES if args.rule_actions else SPEED_ONLY if args.speed_only else None
 
     env = RuleSelectionEnv(FlowTwinEnv(DEFAULT), rules) if rules else FlowTwinEnv(DEFAULT)
+    if args.order_first:
+        env = OrderFirstEnv(FlowTwinEnv(DEFAULT))
     net = (ActorCritic if args.agent == "ppo" else QNet)(env.observation_space.shape[0], env.action_space.n)
     net.load_state_dict(torch.load(args.model, weights_only=True))
     net.eval()
@@ -73,6 +77,9 @@ def main():
             return action
         picks.append(rules[action // env.cfg.n_speeds])
         return to_line_action(env, obs, action, rules)
+
+    if args.order_first:                 # one order decision per shift, then speeds
+        policy = order_line_policy(lambda o, m: net.act(o, deterministic=True, mask=m))
 
     b = policy_behaviour(policy, DEFAULT, args.episodes, args.seed0)
     if rules and len(rules) > 1 and picks:

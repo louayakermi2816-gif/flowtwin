@@ -18,6 +18,7 @@ from flowtwin.dqn import DQNConfig, policy_from_qnet, train_dqn
 from flowtwin.env import FlowTwinEnv
 from flowtwin.evaluate import evaluate, save_results
 from flowtwin.heuristics import HEURISTICS, TABLE_RULES
+from flowtwin.order_actions import OrderFirstEnv, order_line_policy
 from flowtwin.rule_actions import RULES, SPEED_ONLY, RuleSelectionEnv, line_policy
 
 
@@ -34,6 +35,8 @@ def main():
     actions.add_argument("--rule-actions", action="store_true",
                          help="each action picks a dispatching rule (FIFO/SPT/EDD) and a speed instead of a product")
     actions.add_argument("--speed-only", action="store_true", help="EDD picks the product; each action is only the line speed")
+    actions.add_argument("--order-first", action="store_true",
+                         help="the first decision of a shift picks the launch order, every later one the line speed")
     ap.add_argument("--out", default="results")
     ap.add_argument("--models", default="models", help="directory for the trained checkpoint")
     args = ap.parse_args()
@@ -44,13 +47,15 @@ def main():
     models = Path(args.models); models.mkdir(parents=True, exist_ok=True)
 
     env = FlowTwinEnv(train_cfg)
-    q, history = train_dqn(RuleSelectionEnv(env, rules) if rules else env,
+    q, history = train_dqn(RuleSelectionEnv(env, rules) if rules else OrderFirstEnv(env) if args.order_first else env,
                            DQNConfig(total_steps=args.steps, seed=args.seed))
     torch.save(q.state_dict(), models / "dqn.pt")
     (out / "dqn_history.json").write_text(json.dumps(history, indent=1), encoding="utf-8")
 
     results = {name: evaluate(HEURISTICS[name], line_cfg, args.episodes) for name in TABLE_RULES}
     agent = line_policy(policy_from_qnet(q, masked=False), rules) if rules else policy_from_qnet(q)
+    if args.order_first:
+        agent = order_line_policy(lambda o, m: q.act(o, mask=m))
     results["double-dqn"] = evaluate(agent, line_cfg, args.episodes)
     save_results(results, out, "dqn_vs_heuristics", refs=("edd", "edd_low"))
     print((out / "dqn_vs_heuristics.md").read_text(encoding="utf-8"))
