@@ -41,7 +41,10 @@ python scripts/run_baselines.py --episodes 30          # FIFO / SPT / EDD / EDD-
 python scripts/train_ppo.py --steps 100000 --sb3       # our PPO vs sb3-contrib MaskablePPO vs heuristics
 python scripts/train_dqn.py --steps 100000             # Double-DQN vs heuristics
 python scripts/run_sensitivity.py --workers 2          # lateness-weight study -> results/sensitivity.md
-python scripts/inspect_agent.py --agent ppo --model models/ppo.pt   # what an agent actually does
+python scripts/run_dense_pilot.py --workers 2          # v0.3 pilot: dense lateness signal -> results/dense_lateness_pilot.md
+python scripts/run_rule_pilot.py --workers 2           # v0.3 pilot: agents pick a rule and a speed -> results/rule_selection_pilot.md
+python scripts/run_speed_pilot.py --workers 2          # v0.3 pilot: EDD order, agents pick the speed -> results/speed_only_pilot.md
+python scripts/inspect_agent.py --agent ppo --model models/ppo.pt --trace 1000   # what an agent actually does
 uvicorn flowtwin.api:app --reload                      # http://127.0.0.1:8000/docs
 ```
 
@@ -200,6 +203,38 @@ least 2 of its 3 seeds. `python scripts/run_sensitivity.py --workers 2` reproduc
   problem, not missing information.
 - **Verdict:** under this protocol neither agent beats the strongest rule at any weight.
 
+### Teaching the agents to sequence (v0.3 pilots)
+
+The study left one gap: the agents learn the speed lever, not the launch order. Three pilots
+at lateness weight 2.5 change one thing each and keep the study's agents, budget, seeds,
+evaluation and decision rule. Each protocol was committed before its runs (`d1fc765`,
+`063ecea`, `a6e1eb3`), and every report recomputes the study's rows at this weight, which
+match `results/sensitivity.md` exactly.
+
+| variant | what the agent controls | PPO (ours), 3 seeds | Double-DQN, 3 seeds | beats edd_slack(360) |
+|---|---|---|---|---|
+| study | product and speed | 135.5 to 159.0 | −12.9 to 101.6 | neither (0/3 seeds each) |
+| dense lateness | product and speed; lateness charged while it accrues | 153.6 to 155.1 | 147.0 to 154.4 | neither (0/3 seeds each) |
+| rule selection | a rule (FIFO, SPT or EDD) and the speed | 134.6 to 153.3 | 166.7 to 236.7 | neither (0/3 seeds each) |
+| speed only | the speed; EDD fixes the order | 265.8 to 269.7 | 250.0 to 270.2 | neither (0/3 seeds each) |
+
+- **Reward timing is not the bottleneck** (`results/dense_lateness_pilot.md`). Charging
+  lateness while it accrues keeps every episode's total but moves the penalty earlier;
+  every PPO run still launches one fixed order on 30/30 shifts. It does steady Double-DQN.
+- **The agents do not find EDD even one action away** (`results/rule_selection_pilot.md`).
+  PPO settles on one rule (SPT on 100 % of decisions for two seeds, FIFO on 77 % for the
+  third). Double-DQN gains +135 to +181 over picking products and uses EDD on 17–53 % of
+  its decisions, but no agent reaches plain EDD at nominal speed (270.1), a single constant
+  action in that space.
+- **With the order fixed, the agents land within the noise of the best rule**
+  (`results/speed_only_pilot.md`): paired Δ −14.5 to −34.7 with every 95% CI including 0,
+  and +108 to +278 over the same agents picking products. They run slower than the rule
+  (PPO puts 0–2 % of batches at high speed) and trade lateness for energy, so their returns
+  sit at plain EDD's 270.1 instead of using the rule's speed-up when an order runs late.
+- **Verdict (v0.3):** no variant lets an agent beat the strongest rule at weight 2.5. The
+  speed lever is learned to within the noise of the tuned rule; the open problem is
+  learning *which order to launch*.
+
 **First runs and what was fixed.** The first 100k-step runs (commit `fd114d2`) lost to
 EDD: PPO 297.3 ± 36.5, Double-DQN 335.2 ± 57.1; SB3 PPO reached 382.3 ± 44.7 only by
 slowing the line. PPO picked an already finished product 23.4 times per episode and let
@@ -219,13 +254,14 @@ flowtwin/env.py         Gymnasium environment
 flowtwin/heuristics.py  FIFO, SPT, EDD, EDD at low speed, slack-aware EDD, random
 flowtwin/ppo.py         PPO (actor-critic, GAE, clipped objective, action masking)
 flowtwin/dqn.py         Double-DQN (replay buffer, target network, action masking)
+flowtwin/rule_actions.py  opt-in action spaces: a dispatching rule and a speed, or only the speed (EDD order)
 flowtwin/plan.py        planned-vs-actual deviations
 flowtwin/evaluate.py    seeded evaluation, paired confidence intervals, Markdown/CSV tables
 flowtwin/oee.py         OEE proxy of the bottleneck
 flowtwin/api.py         FastAPI service; flowtwin/mqtt_bridge.py MQTT publisher
 node-red/               dashboard flow (flows.json) and its image (Dockerfile)
-scripts/                run_baselines, train_ppo, train_dqn, run_sensitivity, inspect_agent, demo_feed
-tests/                  env, agents, API, sensitivity and supervision tests
+scripts/                run_baselines, train_ppo, train_dqn, run_sensitivity, the three v0.3 pilots, inspect_agent, demo_feed
+tests/                  env, agents, API, sensitivity, supervision, dense lateness and rule-action tests
 .github/workflows/      CI: the tests run on every push
 ```
 
@@ -239,6 +275,9 @@ tests/                  env, agents, API, sensitivity and supervision tests
   are reported above. PPO's training return plateaus after about 30k decisions.
 - The observation gives remaining demand as a fraction of each order, not as absolute
   work, so an agent cannot compute an order's slack exactly.
+- The v0.3 options (dense lateness, rule and speed-only actions) are opt-in and were tested
+  in pilots at one lateness weight (2.5) with 3 training seeds; the published agents keep
+  the standard reward and pick products directly.
 
 ## License
 
