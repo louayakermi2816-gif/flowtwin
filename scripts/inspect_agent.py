@@ -5,6 +5,7 @@ order. --trace prints every decision of one shift.
     python scripts/inspect_agent.py --agent ppo --model models/ppo.pt
     python scripts/inspect_agent.py --agent dqn --model models/dqn.pt --trace 1000
     python scripts/inspect_agent.py --agent ppo --model models/runs/rules_wt2.5_s0/ppo.pt --rule-actions --trace 1000
+    python scripts/inspect_agent.py --agent dqn --model models/runs/speed_wt2.5_s0/dqn.pt --speed-only --trace 1000
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from flowtwin.dqn import QNet, policy_from_qnet
 from flowtwin.env import FlowTwinEnv
 from flowtwin.evaluate import policy_behaviour
 from flowtwin.ppo import ActorCritic, policy_from_model
-from flowtwin.rule_actions import RULES, RuleSelectionEnv, to_line_action
+from flowtwin.rule_actions import RULES, SPEED_ONLY, RuleSelectionEnv, to_line_action
 
 SPEEDS = ("low", "nominal", "high")
 
@@ -50,30 +51,33 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--episodes", type=int, default=30)
     ap.add_argument("--seed0", type=int, default=1000)
-    ap.add_argument("--rule-actions", action="store_true", help="the agent was trained with --rule-actions")
+    actions = ap.add_mutually_exclusive_group()
+    actions.add_argument("--rule-actions", action="store_true", help="the agent was trained with --rule-actions")
+    actions.add_argument("--speed-only", action="store_true", help="the agent was trained with --speed-only")
     ap.add_argument("--trace", type=int, metavar="SEED", help="also print every decision of this shift")
     args = ap.parse_args()
+    rules = RULES if args.rule_actions else SPEED_ONLY if args.speed_only else None
 
-    env = RuleSelectionEnv(FlowTwinEnv(DEFAULT)) if args.rule_actions else FlowTwinEnv(DEFAULT)
+    env = RuleSelectionEnv(FlowTwinEnv(DEFAULT), rules) if rules else FlowTwinEnv(DEFAULT)
     net = (ActorCritic if args.agent == "ppo" else QNet)(env.observation_space.shape[0], env.action_space.n)
     net.load_state_dict(torch.load(args.model, weights_only=True))
     net.eval()
-    masked = not args.rule_actions       # rule actions are always valid; the line env masks products
+    masked = rules is None               # rule actions are always valid; the line env masks products
     agent = policy_from_model(net, masked=masked) if args.agent == "ppo" else policy_from_qnet(net, masked=masked)
 
     picks = []                           # the rule chosen at each decision (rule-action agents)
 
     def policy(env, obs):
         action = agent(env, obs)
-        if not args.rule_actions:
+        if rules is None:
             return action
-        picks.append(RULES[action // env.cfg.n_speeds])
-        return to_line_action(env, obs, action)
+        picks.append(rules[action // env.cfg.n_speeds])
+        return to_line_action(env, obs, action, rules)
 
     b = policy_behaviour(policy, DEFAULT, args.episodes, args.seed0)
-    if picks:
+    if rules and len(rules) > 1 and picks:
         counts = Counter(picks)
-        print(f"rule share ({' / '.join(RULES)}): " + " / ".join(f"{counts[r] / len(picks):.1%}" for r in RULES))
+        print(f"rule share ({' / '.join(rules)}): " + " / ".join(f"{counts[r] / len(picks):.1%}" for r in rules))
     print("speed share (low / nominal / high): " + " / ".join(f"{s:.1%}" for s in b["speed_share"]))
     print(f"launch order equals the EDD order on {b['edd_order']}/{args.episodes} episodes")
     print("most common launch sequences (product indices):")

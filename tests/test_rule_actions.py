@@ -1,5 +1,6 @@
 """Rule-selection action space: each action picks a dispatching rule and a speed, the rule picks
-the product, so following a rule is one repeated action and no action is ever masked."""
+the product, so following a rule is one repeated action and no action is ever masked. With
+SPEED_ONLY the EDD order is fixed and the action is only the speed."""
 import json
 import subprocess
 import sys
@@ -12,8 +13,8 @@ import pytest
 from flowtwin.config import DEFAULT
 from flowtwin.env import FlowTwinEnv
 from flowtwin.evaluate import evaluate
-from flowtwin.heuristics import HEURISTICS, LOW_SPEED, NOMINAL_SPEED
-from flowtwin.rule_actions import RULES, RuleSelectionEnv, line_policy
+from flowtwin.heuristics import HEURISTICS, LOW_SPEED, NOMINAL_SPEED, make_edd_slack
+from flowtwin.rule_actions import RULES, SPEED_ONLY, RuleSelectionEnv, line_policy
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = replace(DEFAULT, w_tardiness=2.5)
@@ -42,6 +43,35 @@ def test_wrapper_follows_the_rule_and_never_masks():
         total += r; done = term or trunc
     assert info["kpis"]["invalid_actions"] == 0
     assert total == evaluate(HEURISTICS["edd_low"], CFG, n_episodes=1)["return"][0]
+
+
+@pytest.mark.parametrize("speed, reference", [(LOW_SPEED, "edd_low"), (NOMINAL_SPEED, "edd")])
+def test_speed_only_fixes_the_edd_order(speed, reference):
+    a = evaluate(line_policy(lambda env, obs: speed, SPEED_ONLY), CFG, n_episodes=3)
+    b = evaluate(HEURISTICS[reference], CFG, n_episodes=3)
+    assert all(np.array_equal(a[c], b[c]) for c in a)
+
+
+def test_speed_only_can_express_the_slack_rule():
+    assert RuleSelectionEnv(FlowTwinEnv(CFG), SPEED_ONLY).action_space.n == CFG.n_speeds
+    rule = make_edd_slack(360)
+    agent = line_policy(lambda env, obs: env.decode(rule(env, obs))[1], SPEED_ONLY)   # the rule's own speeds
+    a, b = evaluate(agent, CFG, n_episodes=3), evaluate(rule, CFG, n_episodes=3)
+    assert all(np.array_equal(a[c], b[c]) for c in a)
+
+
+def test_speed_only_scripts_run_and_conflicting_action_flags_are_refused(tmp_path):
+    pytest.importorskip("torch")
+    subprocess.run([sys.executable, "scripts/train_dqn.py", "--steps", "300", "--episodes", "2", "--w-tardiness", "2.5",
+                    "--speed-only", "--out", str(tmp_path), "--models", str(tmp_path)], cwd=ROOT, check=True, capture_output=True)
+    saved = json.loads((tmp_path / "dqn_vs_heuristics.json").read_text(encoding="utf-8"))
+    assert saved["double-dqn"]["invalid_actions"] == [0.0, 0.0]
+    shown = subprocess.run([sys.executable, "scripts/inspect_agent.py", "--agent", "dqn", "--model", str(tmp_path / "dqn.pt"),
+                            "--speed-only", "--episodes", "2", "--trace", "1000"],
+                           cwd=ROOT, check=True, capture_output=True, encoding="utf-8").stdout
+    assert "launch order equals the EDD order on 2/2 episodes" in shown and " edd -> " in shown
+    refused = subprocess.run([sys.executable, "scripts/train_dqn.py", "--rule-actions", "--speed-only"], cwd=ROOT, capture_output=True)
+    assert refused.returncode == 2                 # argparse error before any training
 
 
 def test_training_and_inspect_scripts_take_rule_actions(tmp_path):
