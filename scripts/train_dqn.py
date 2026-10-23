@@ -18,6 +18,7 @@ from flowtwin.dqn import DQNConfig, policy_from_qnet, train_dqn
 from flowtwin.env import FlowTwinEnv
 from flowtwin.evaluate import evaluate, save_results
 from flowtwin.heuristics import HEURISTICS, TABLE_RULES
+from flowtwin.rule_actions import RuleSelectionEnv, line_policy
 
 
 def main():
@@ -29,6 +30,8 @@ def main():
     ap.add_argument("--w-tardiness", type=float, default=DEFAULT.w_tardiness, help="reward weight per minute of lateness")
     ap.add_argument("--dense-tardiness", action="store_true",
                     help="train on lateness as it accrues (same episode totals); evaluation keeps the standard reward")
+    ap.add_argument("--rule-actions", action="store_true",
+                    help="each action picks a dispatching rule (FIFO/SPT/EDD) and a speed instead of a product")
     ap.add_argument("--out", default="results")
     ap.add_argument("--models", default="models", help="directory for the trained checkpoint")
     args = ap.parse_args()
@@ -37,12 +40,15 @@ def main():
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     models = Path(args.models); models.mkdir(parents=True, exist_ok=True)
 
-    q, history = train_dqn(FlowTwinEnv(train_cfg), DQNConfig(total_steps=args.steps, seed=args.seed))
+    env = FlowTwinEnv(train_cfg)
+    q, history = train_dqn(RuleSelectionEnv(env) if args.rule_actions else env,
+                           DQNConfig(total_steps=args.steps, seed=args.seed))
     torch.save(q.state_dict(), models / "dqn.pt")
     (out / "dqn_history.json").write_text(json.dumps(history, indent=1), encoding="utf-8")
 
     results = {name: evaluate(HEURISTICS[name], line_cfg, args.episodes) for name in TABLE_RULES}
-    results["double-dqn"] = evaluate(policy_from_qnet(q), line_cfg, args.episodes)
+    agent = line_policy(policy_from_qnet(q, masked=False)) if args.rule_actions else policy_from_qnet(q)
+    results["double-dqn"] = evaluate(agent, line_cfg, args.episodes)
     save_results(results, out, "dqn_vs_heuristics", refs=("edd", "edd_low"))
     print((out / "dqn_vs_heuristics.md").read_text(encoding="utf-8"))
 
