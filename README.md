@@ -13,8 +13,9 @@ Double-DQN); `train_ppo.py --sb3` adds a cross-check against Stable-Baselines3
 KPIs over **MQTT** to a **Node-RED** dashboard that shows an OEE proxy of the
 bottleneck and **planned-vs-actual deviation alerts**.
 
-Status: **in development** (started September 2026). Results tables in `results/`
-are produced by the scripts below; numbers are only reported once measured.
+Status: **v0.3.0** (October 2026): the twin, the agents, the pre-registered studies and the
+deployable stack are complete. Results tables in `results/` are produced by the scripts
+below; numbers are only reported once measured.
 
 ```
 SimPy line model ──▶ Gymnasium env ──▶ heuristics / PPO / Double-DQN (PyTorch)
@@ -34,7 +35,7 @@ planner would use.
 
 ```bash
 python -m venv .venv && .venv/Scripts/activate        # Windows; use source .venv/bin/activate on Linux/macOS
-pip install -r requirements.txt
+pip install -r requirements.txt -c constraints.txt     # the versions the tests and the image use
 pytest -q                                              # environment, agents, API and supervision tests
 
 python scripts/run_baselines.py --episodes 30          # FIFO / SPT / EDD / EDD-low / random -> results/baselines.md
@@ -45,6 +46,7 @@ python scripts/run_dense_pilot.py --workers 2          # v0.3 pilot: dense laten
 python scripts/run_rule_pilot.py --workers 2           # v0.3 pilot: agents pick a rule and a speed -> results/rule_selection_pilot.md
 python scripts/run_speed_pilot.py --workers 2          # v0.3 pilot: EDD order, agents pick the speed -> results/speed_only_pilot.md
 python scripts/run_warm_start_pilot.py --workers 2     # v0.3 pilot: PPO starts from the slack rule -> results/warm_start_pilot.md
+python scripts/run_order_pilot.py --workers 2          # v0.3 pilot: one launch-order decision per shift -> results/order_first_pilot.md
 python scripts/inspect_agent.py --agent ppo --model models/ppo.pt --trace 1000   # what an agent actually does
 uvicorn flowtwin.api:app --reload                      # http://127.0.0.1:8000/docs
 ```
@@ -108,6 +110,33 @@ If your network intercepts HTTPS (antivirus "HTTPS scanning" or a corporate prox
 pip and npm inside the image builds fail with `CERTIFICATE_VERIFY_FAILED`: add the
 interceptor's root certificate to the build or switch the scanning off. On the host,
 `pip install --use-feature=truststore ...` uses the operating system's certificates.
+
+## Deploy
+
+`docker-compose.yml` is the deployment: the API serving the trained agents, the MQTT broker
+and the Node-RED dashboard. CI builds it from a clean checkout and smoke-tests it (API,
+broker messages, a full shift, the dashboard) on every push.
+
+1. **Agents.** Train them once (the first command of the live demo, about 20 minutes and
+   deterministic) or copy `models/ppo.pt` and `models/dqn.pt` from a machine that did.
+   Without them the API still runs and serves the rules; `/health` lists the loaded agents.
+2. **Settings.** `cp .env.example .env`. `FLOWTWIN_BIND` (default `127.0.0.1`) is the
+   address the three services listen on; `FLOWTWIN_RESTART=unless-stopped` keeps the stack
+   up across reboots and Docker restarts (default `no`).
+3. **Start.** `docker compose up --build -d`. `docker compose ps` shows the API as healthy
+   once `/health` answers.
+4. **Check.** `curl http://127.0.0.1:8000/health` returns
+   `{"status":"ok","mqtt":true,"models":["ppo","dqn"]}`; the dashboard is at
+   http://127.0.0.1:1880/dashboard.
+5. **Update or stop.** `git pull && docker compose up --build -d`; `docker compose down`
+   stops it and keeps the agents in `models/`.
+
+Before setting `FLOWTWIN_BIND=0.0.0.0`: the Node-RED editor and the MQTT broker have no
+authentication. Put them behind a reverse proxy with TLS and a login, set `adminAuth` in
+Node-RED's settings and give Mosquitto a password file (`allow_anonymous false`). The image
+installs the exact versions in `constraints.txt`, the ones the tests run with. Flows edited
+in the Node-RED editor live in the container and are replaced by `node-red/flows.json` on
+the next build.
 
 ## Results
 
@@ -206,11 +235,11 @@ least 2 of its 3 seeds. `python scripts/run_sensitivity.py --workers 2` reproduc
 
 ### Teaching the agents to sequence (v0.3 pilots)
 
-The study left one gap: the agents learn the speed lever, not the launch order. Four pilots
+The study left one gap: the agents learn the speed lever, not the launch order. Five pilots
 at lateness weight 2.5 change one thing each and keep the study's agents, budget, seeds,
 evaluation and decision rule. Each protocol was committed before its runs (`d1fc765`,
-`063ecea`, `a6e1eb3`, `2177894`), and every report recomputes the study's rows at this
-weight, which match `results/sensitivity.md` exactly.
+`063ecea`, `a6e1eb3`, `2177894`, `6b66505`), and every report recomputes the study's rows
+at this weight, which match `results/sensitivity.md` exactly.
 
 | variant | what the agent controls | PPO (ours), 3 seeds | Double-DQN, 3 seeds | beats edd_slack(360) |
 |---|---|---|---|---|
@@ -219,6 +248,7 @@ weight, which match `results/sensitivity.md` exactly.
 | rule selection | a rule (FIFO, SPT or EDD) and the speed | 134.6 to 153.3 | 166.7 to 236.7 | neither (0/3 seeds each) |
 | speed only | the speed; EDD fixes the order | 265.8 to 269.7 | 250.0 to 270.2 | neither (0/3 seeds each) |
 | warm start | product and speed, starting from a clone of edd_slack(360) | 266.5 to 292.0 | not run | no (0/3 seeds) |
+| order first | the launch order once per shift, then the speed | 156.0 to 194.1 | 209.4 to 262.9 | neither (0/3 seeds each) |
 
 - **Reward timing is not the bottleneck** (`results/dense_lateness_pilot.md`). Charging
   lateness while it accrues keeps every episode's total but moves the penalty earlier;
@@ -239,10 +269,16 @@ weight, which match `results/sensitivity.md` exactly.
   shifts (study PPO: 5–6) and gains +126 to +133 over the study's PPO, but RL neither
   improves nor degrades the clone, and the paired Δ against the rule (−18.1 to +7.3) has
   every 95% CI including 0. Double-DQN is not run: its exploration starts fully random.
+- **One order decision per shift lets Double-DQN find the order** (`results/order_first_pilot.md`).
+  When the launch order is picked once at the start of the shift and only the speed after
+  that, Double-DQN's order is the EDD order on 17–18 of 30 shifts (0–4 when it picks
+  products) and it gains +143 to +276; its best seed is within the noise of the rule
+  (−21.8 ± 24.4). PPO still settles on a single order (EDD on 5–8 of 30 shifts).
 - **Verdict (v0.3):** no variant lets an agent beat the strongest rule at weight 2.5. With
-  the order fixed, or once started from the rule, the agents reach it within the noise;
-  learning from scratch they never find the launch order. The open problem is
-  *discovering* which order to launch, not holding or fine-tuning it.
+  the order fixed, or once started from the rule, the agents reach it within the noise.
+  From scratch the launch order is the hard part: spread over every product choice no
+  agent finds it; as one decision per shift Double-DQN finds it on most shifts, while
+  PPO's policy still settles on one order.
 
 **First runs and what was fixed.** The first 100k-step runs (commit `fd114d2`) lost to
 EDD: PPO 297.3 ± 36.5, Double-DQN 335.2 ± 57.1; SB3 PPO reached 382.3 ± 44.7 only by
@@ -265,14 +301,17 @@ flowtwin/ppo.py         PPO (actor-critic, GAE, clipped objective, action maskin
 flowtwin/dqn.py         Double-DQN (replay buffer, target network, action masking)
 flowtwin/rule_actions.py  opt-in action spaces: a dispatching rule and a speed, or only the speed (EDD order)
 flowtwin/imitation.py   behaviour cloning: warm-start PPO from a rule's decisions
+flowtwin/order_actions.py  opt-in action space: one launch-order decision per shift, then the speed
 flowtwin/plan.py        planned-vs-actual deviations
 flowtwin/evaluate.py    seeded evaluation, paired confidence intervals, Markdown/CSV tables
 flowtwin/oee.py         OEE proxy of the bottleneck
 flowtwin/api.py         FastAPI service; flowtwin/mqtt_bridge.py MQTT publisher
 node-red/               dashboard flow (flows.json) and its image (Dockerfile)
-scripts/                run_baselines, train_ppo, train_dqn, run_sensitivity, the four v0.3 pilots, inspect_agent, demo_feed
-tests/                  env, agents, API, sensitivity, supervision, dense lateness, rule-action and imitation tests
-.github/workflows/      CI: the tests run on every push
+docker-compose.yml      the deployable stack (API, Mosquitto, Node-RED); .env.example holds its settings
+constraints.txt         the exact dependency versions the tests and the image use
+scripts/                run_baselines, train_ppo, train_dqn, run_sensitivity, the five v0.3 pilots, inspect_agent, demo_feed
+tests/                  env, agents, API, sensitivity, supervision, dense lateness, rule-action, imitation and order-first tests
+.github/workflows/      CI on every push: the tests, and a Docker build and smoke test of the stack
 ```
 
 ## Limitations (known, on purpose)
@@ -285,7 +324,7 @@ tests/                  env, agents, API, sensitivity, supervision, dense latene
   are reported above. PPO's training return plateaus after about 30k decisions.
 - The observation gives remaining demand as a fraction of each order, not as absolute
   work, so an agent cannot compute an order's slack exactly.
-- The v0.3 options (dense lateness, rule and speed-only actions, the warm start) are opt-in
+- The v0.3 options (dense lateness, rule, speed-only and order-first actions, the warm start) are opt-in
   and were tested in pilots at one lateness weight (2.5) with 3 training seeds; the
   published agents keep the standard reward, pick products directly and start untrained.
 
