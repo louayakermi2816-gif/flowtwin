@@ -18,7 +18,8 @@ import torch
 from flowtwin.config import DEFAULT
 from flowtwin.env import FlowTwinEnv
 from flowtwin.evaluate import evaluate, save_results
-from flowtwin.heuristics import HEURISTICS, TABLE_RULES
+from flowtwin.heuristics import HEURISTICS, TABLE_RULES, make_edd_slack
+from flowtwin.imitation import CloneConfig, warm_start
 from flowtwin.ppo import PPOConfig, policy_from_model, train_ppo
 from flowtwin.rule_actions import RULES, SPEED_ONLY, RuleSelectionEnv, line_policy
 
@@ -37,12 +38,17 @@ def main():
     actions.add_argument("--rule-actions", action="store_true",
                          help="each action picks a dispatching rule (FIFO/SPT/EDD) and a speed instead of a product")
     actions.add_argument("--speed-only", action="store_true", help="EDD picks the product; each action is only the line speed")
+    ap.add_argument("--warm-start-slack", type=float, metavar="MARGIN",
+                    help="before PPO, behaviour-clone edd_slack(MARGIN) (flowtwin.imitation); product actions only")
+    ap.add_argument("--clone-episodes", type=int, default=CloneConfig.episodes, help="demonstration shifts for the warm start")
     ap.add_argument("--out", default="results")
     ap.add_argument("--models", default="models", help="directory for the trained checkpoints")
     args = ap.parse_args()
     rules = RULES if args.rule_actions else SPEED_ONLY if args.speed_only else None
     if args.sb3 and rules:
         ap.error("--rule-actions and --speed-only are not wired into the --sb3 cross-check")
+    if args.warm_start_slack is not None and (rules or args.sb3):
+        ap.error("--warm-start-slack works with product actions and without --sb3")
     if args.sb3:
         from sb3_contrib import MaskablePPO   # fail before training if the optional dependency is missing
     line_cfg = replace(DEFAULT, w_tardiness=args.w_tardiness)
@@ -54,11 +60,20 @@ def main():
     if rules:
         env = RuleSelectionEnv(env, rules)
     cfg = PPOConfig(total_steps=args.steps, seed=args.seed)
-    model, history = train_ppo(env, cfg)
+    start, before_rl = None, None
+    if args.warm_start_slack is not None:
+        start, clone_stats = warm_start(make_edd_slack(args.warm_start_slack), train_cfg, cfg,
+                                        CloneConfig(episodes=args.clone_episodes))
+        torch.save(start.state_dict(), models / "ppo_warm_start.pt")
+        (out / "ppo_warm_start.json").write_text(json.dumps(clone_stats, indent=1), encoding="utf-8")
+        before_rl = evaluate(policy_from_model(start), line_cfg, args.episodes)   # train_ppo updates `start` in place
+    model, history = train_ppo(env, cfg, model=start)
     torch.save(model.state_dict(), models / "ppo.pt")
     (out / "ppo_history.json").write_text(json.dumps(history, indent=1), encoding="utf-8")
 
     results = {name: evaluate(HEURISTICS[name], line_cfg, args.episodes) for name in TABLE_RULES}
+    if before_rl is not None:
+        results["ppo warm start (before rl)"] = before_rl
     agent = line_policy(policy_from_model(model, masked=False), rules) if rules else policy_from_model(model)
     results["ppo (ours)"] = evaluate(agent, line_cfg, args.episodes)
 

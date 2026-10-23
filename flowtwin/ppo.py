@@ -81,11 +81,14 @@ def compute_gae(rewards, values, dones, last_value, gamma, lam):
     return adv, adv + values
 
 
-def train_ppo(env: gym.Env, cfg: PPOConfig = PPOConfig(), log: Optional[Callable[[Dict], None]] = print):
+def train_ppo(env: gym.Env, cfg: PPOConfig = PPOConfig(), log: Optional[Callable[[Dict], None]] = print,
+              model: Optional[ActorCritic] = None):
+    """Train with PPO; `model` starts from given weights (a warm start) instead of a fresh network."""
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     obs_dim = int(np.prod(env.observation_space.shape))
-    model = ActorCritic(obs_dim, env.action_space.n, cfg.hidden)
+    if model is None:
+        model = ActorCritic(obs_dim, env.action_space.n, cfg.hidden)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr, eps=1e-5)
 
     obs, info = env.reset(seed=cfg.seed)
