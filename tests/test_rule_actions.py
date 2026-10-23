@@ -44,11 +44,15 @@ def test_wrapper_follows_the_rule_and_never_masks():
     assert total == evaluate(HEURISTICS["edd_low"], CFG, n_episodes=1)["return"][0]
 
 
-def test_training_scripts_take_rule_actions(tmp_path):
+def test_training_and_inspect_scripts_take_rule_actions(tmp_path):
     pytest.importorskip("torch")
     subprocess.run([sys.executable, "scripts/train_ppo.py", "--steps", "512", "--episodes", "2", "--w-tardiness", "2.5",
                     "--rule-actions", "--out", str(tmp_path), "--models", str(tmp_path)], cwd=ROOT, check=True, capture_output=True)
     saved = json.loads((tmp_path / "ppo_vs_heuristics.json").read_text(encoding="utf-8"))
     assert saved["ppo (ours)"]["invalid_actions"] == [0.0, 0.0]
+    shown = subprocess.run([sys.executable, "scripts/inspect_agent.py", "--agent", "ppo", "--model", str(tmp_path / "ppo.pt"),
+                            "--rule-actions", "--episodes", "2", "--trace", "1000"],
+                           cwd=ROOT, check=True, capture_output=True, encoding="utf-8").stdout
+    assert "rule share (fifo / spt / edd)" in shown and "shift 1000:" in shown
     refused = subprocess.run([sys.executable, "scripts/train_ppo.py", "--sb3", "--rule-actions"], cwd=ROOT, capture_output=True)
     assert refused.returncode == 2                 # argparse error before any training
