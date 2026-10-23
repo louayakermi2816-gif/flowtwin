@@ -12,3 +12,4 @@ results/*
 .vscode/
 .idea/
 *.log
+.env

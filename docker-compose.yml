@@ -1,3 +1,6 @@
+# Ports listen on 127.0.0.1 unless FLOWTWIN_BIND says otherwise: the Node-RED editor and the
+# MQTT broker have no authentication (see "Deploy" in the README). Containers do not restart on
+# their own unless FLOWTWIN_RESTART=unless-stopped. Both can be set in a .env file (.env.example).
 services:
   api:
     build: .
@@ -8,16 +11,19 @@ services:
       MODEL_DQN: /app/models/dqn.pt
     volumes:
       - ./models:/app/models:ro     # trained checkpoints (train them first; git-ignored)
-    ports: ["8000:8000"]
+    ports: ["${FLOWTWIN_BIND:-127.0.0.1}:8000:8000"]
     depends_on: [mosquitto]
+    restart: ${FLOWTWIN_RESTART:-no}
 
   mosquitto:
     image: eclipse-mosquitto:2.0.22
-    ports: ["1883:1883"]
+    ports: ["${FLOWTWIN_BIND:-127.0.0.1}:1883:1883"]
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: ${FLOWTWIN_RESTART:-no}
 
   nodered:
     build: ./node-red
-    ports: ["1880:1880"]
+    ports: ["${FLOWTWIN_BIND:-127.0.0.1}:1880:1880"]
     depends_on: [mosquitto]
+    restart: ${FLOWTWIN_RESTART:-no}

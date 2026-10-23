@@ -1,0 +1,18 @@
+# The API image only needs the package: keep local state (virtualenv, git history, checkpoints,
+# run results, settings) out of the build context.
+.git
+.github
+.venv
+venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+*.egg-info
+models
+results
+tests
+scripts
+node-red
+mosquitto
+*.log
+.env
