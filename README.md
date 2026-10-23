@@ -44,6 +44,7 @@ python scripts/run_sensitivity.py --workers 2          # lateness-weight study -
 python scripts/run_dense_pilot.py --workers 2          # v0.3 pilot: dense lateness signal -> results/dense_lateness_pilot.md
 python scripts/run_rule_pilot.py --workers 2           # v0.3 pilot: agents pick a rule and a speed -> results/rule_selection_pilot.md
 python scripts/run_speed_pilot.py --workers 2          # v0.3 pilot: EDD order, agents pick the speed -> results/speed_only_pilot.md
+python scripts/run_warm_start_pilot.py --workers 2     # v0.3 pilot: PPO starts from the slack rule -> results/warm_start_pilot.md
 python scripts/inspect_agent.py --agent ppo --model models/ppo.pt --trace 1000   # what an agent actually does
 uvicorn flowtwin.api:app --reload                      # http://127.0.0.1:8000/docs
 ```
@@ -205,11 +206,11 @@ least 2 of its 3 seeds. `python scripts/run_sensitivity.py --workers 2` reproduc
 
 ### Teaching the agents to sequence (v0.3 pilots)
 
-The study left one gap: the agents learn the speed lever, not the launch order. Three pilots
+The study left one gap: the agents learn the speed lever, not the launch order. Four pilots
 at lateness weight 2.5 change one thing each and keep the study's agents, budget, seeds,
 evaluation and decision rule. Each protocol was committed before its runs (`d1fc765`,
-`063ecea`, `a6e1eb3`), and every report recomputes the study's rows at this weight, which
-match `results/sensitivity.md` exactly.
+`063ecea`, `a6e1eb3`, `2177894`), and every report recomputes the study's rows at this
+weight, which match `results/sensitivity.md` exactly.
 
 | variant | what the agent controls | PPO (ours), 3 seeds | Double-DQN, 3 seeds | beats edd_slack(360) |
 |---|---|---|---|---|
@@ -217,6 +218,7 @@ match `results/sensitivity.md` exactly.
 | dense lateness | product and speed; lateness charged while it accrues | 153.6 to 155.1 | 147.0 to 154.4 | neither (0/3 seeds each) |
 | rule selection | a rule (FIFO, SPT or EDD) and the speed | 134.6 to 153.3 | 166.7 to 236.7 | neither (0/3 seeds each) |
 | speed only | the speed; EDD fixes the order | 265.8 to 269.7 | 250.0 to 270.2 | neither (0/3 seeds each) |
+| warm start | product and speed, starting from a clone of edd_slack(360) | 266.5 to 292.0 | not run | no (0/3 seeds) |
 
 - **Reward timing is not the bottleneck** (`results/dense_lateness_pilot.md`). Charging
   lateness while it accrues keeps every episode's total but moves the penalty earlier;
@@ -231,9 +233,16 @@ match `results/sensitivity.md` exactly.
   and +108 to +278 over the same agents picking products. They run slower than the rule
   (PPO puts 0–2 % of batches at high speed) and trade lateness for energy, so their returns
   sit at plain EDD's 270.1 instead of using the rule's speed-up when an order runs late.
-- **Verdict (v0.3):** no variant lets an agent beat the strongest rule at weight 2.5. The
-  speed lever is learned to within the noise of the tuned rule; the open problem is
-  learning *which order to launch*.
+- **Started from the rule, PPO holds it but does not beat it** (`results/warm_start_pilot.md`).
+  PPO is first fitted to edd_slack(360)'s decisions on 200 demonstration shifts (97 % of
+  them reproduced), then trained as usual. It keeps the EDD launch order on 22–24 of 30
+  shifts (study PPO: 5–6) and gains +126 to +133 over the study's PPO, but RL neither
+  improves nor degrades the clone, and the paired Δ against the rule (−18.1 to +7.3) has
+  every 95% CI including 0. Double-DQN is not run: its exploration starts fully random.
+- **Verdict (v0.3):** no variant lets an agent beat the strongest rule at weight 2.5. With
+  the order fixed, or once started from the rule, the agents reach it within the noise;
+  learning from scratch they never find the launch order. The open problem is
+  *discovering* which order to launch, not holding or fine-tuning it.
 
 **First runs and what was fixed.** The first 100k-step runs (commit `fd114d2`) lost to
 EDD: PPO 297.3 ± 36.5, Double-DQN 335.2 ± 57.1; SB3 PPO reached 382.3 ± 44.7 only by
@@ -255,13 +264,14 @@ flowtwin/heuristics.py  FIFO, SPT, EDD, EDD at low speed, slack-aware EDD, rando
 flowtwin/ppo.py         PPO (actor-critic, GAE, clipped objective, action masking)
 flowtwin/dqn.py         Double-DQN (replay buffer, target network, action masking)
 flowtwin/rule_actions.py  opt-in action spaces: a dispatching rule and a speed, or only the speed (EDD order)
+flowtwin/imitation.py   behaviour cloning: warm-start PPO from a rule's decisions
 flowtwin/plan.py        planned-vs-actual deviations
 flowtwin/evaluate.py    seeded evaluation, paired confidence intervals, Markdown/CSV tables
 flowtwin/oee.py         OEE proxy of the bottleneck
 flowtwin/api.py         FastAPI service; flowtwin/mqtt_bridge.py MQTT publisher
 node-red/               dashboard flow (flows.json) and its image (Dockerfile)
-scripts/                run_baselines, train_ppo, train_dqn, run_sensitivity, the three v0.3 pilots, inspect_agent, demo_feed
-tests/                  env, agents, API, sensitivity, supervision, dense lateness and rule-action tests
+scripts/                run_baselines, train_ppo, train_dqn, run_sensitivity, the four v0.3 pilots, inspect_agent, demo_feed
+tests/                  env, agents, API, sensitivity, supervision, dense lateness, rule-action and imitation tests
 .github/workflows/      CI: the tests run on every push
 ```
 
@@ -275,9 +285,9 @@ tests/                  env, agents, API, sensitivity, supervision, dense latene
   are reported above. PPO's training return plateaus after about 30k decisions.
 - The observation gives remaining demand as a fraction of each order, not as absolute
   work, so an agent cannot compute an order's slack exactly.
-- The v0.3 options (dense lateness, rule and speed-only actions) are opt-in and were tested
-  in pilots at one lateness weight (2.5) with 3 training seeds; the published agents keep
-  the standard reward and pick products directly.
+- The v0.3 options (dense lateness, rule and speed-only actions, the warm start) are opt-in
+  and were tested in pilots at one lateness weight (2.5) with 3 training seeds; the
+  published agents keep the standard reward, pick products directly and start untrained.
 
 ## License
 
