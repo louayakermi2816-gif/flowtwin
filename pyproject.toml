@@ -4,12 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flowtwin"
-version = "0.1.0"
+version = "0.3.1"
 description = "Reinforcement-learning production scheduling on a digital twin of a packaging line"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "Louay Akremi" }]
 license = { text = "MIT" }
+keywords = ["digital twin", "reinforcement learning", "production scheduling", "discrete-event simulation",
+            "simpy", "gymnasium", "ppo", "dqn"]
+classifiers = [
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
   "numpy>=1.26",
   "simpy>=4.1",
@@ -23,6 +32,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "stable-baselines3>=2.3", "sb3-contrib>=2.3", "httpx>=0.27"]
+
+[project.urls]
+Repository = "https://github.com/louayakermi2816-gif/flowtwin"
+Results = "https://github.com/louayakermi2816-gif/flowtwin/tree/main/results"
 
 [tool.setuptools.packages.find]
 include = ["flowtwin*"]

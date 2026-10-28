@@ -1,11 +1,4 @@
-numpy>=1.26
-simpy>=4.1
-gymnasium>=0.29
-torch>=2.2
-stable-baselines3>=2.3
-sb3-contrib>=2.3
-fastapi>=0.110
-uvicorn>=0.29
-pydantic>=2.6
-paho-mqtt>=2.0
-pytest>=8.0
+# FlowTwin itself (editable) and everything the tests, the scripts and the MaskablePPO
+# cross-check need; the dependency list lives in pyproject.toml. Install the tested versions:
+#     pip install -r requirements.txt -c constraints.txt
+-e .[dev]

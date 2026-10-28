@@ -6,19 +6,26 @@ on:
 
 jobs:
   pytest:
+    # Follows the README's Quick start on each supported Python: install, tests, a script.
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install CPU-only PyTorch (the version in constraints.txt)
         run: pip install "$(grep '^torch==' constraints.txt)" --index-url https://download.pytorch.org/whl/cpu
-      - name: Install FlowTwin with its test dependencies (the versions in constraints.txt)
-        run: pip install -c constraints.txt -e ".[dev]"
+      - name: Install FlowTwin as the README does (the versions in constraints.txt)
+        run: pip install -r requirements.txt -c constraints.txt
       - name: Run the tests
         run: pytest -q
+      - name: Run a script as the README does
+        run: python scripts/run_baselines.py --episodes 2 --out "$RUNNER_TEMP/baselines"
 
   docker:
     # The deployment path from a clean checkout: build the images, start the stack and check that

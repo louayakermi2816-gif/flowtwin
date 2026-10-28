@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use FlowTwin, please cite it as below."
+title: "FlowTwin: reinforcement-learning production scheduling on a digital twin of a packaging line"
+authors:
+  - family-names: Akremi
+    given-names: Louay
+version: 0.3.1
+date-released: 2026-10-28
+license: MIT
+repository-code: "https://github.com/louayakermi2816-gif/flowtwin"
+keywords:
+  - digital twin
+  - reinforcement learning
+  - production scheduling
+  - discrete-event simulation
+  - dispatching rules
+abstract: >-
+  A SimPy digital twin of a four-stage packaging line (filler, capper, labeller, packer)
+  exposed as a Gymnasium environment. PPO and Double-DQN agents written from scratch in
+  PyTorch are compared with dispatching rules on common seeded shifts under pre-registered
+  protocols, and the twin is served live through FastAPI, MQTT and a Node-RED dashboard.
