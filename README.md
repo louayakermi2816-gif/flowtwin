@@ -120,6 +120,12 @@ docker compose up --build -d
 python scripts/demo_feed.py --policy ppo --interval 1    # steps shifts through the API
 ```
 
+![The Node-RED dashboard during a shift run by the trained PPO agent: KPI tiles, the OEE proxy at the bottleneck with availability and performance, throughput over the shift, and an alert for an order running late against the plan](docs/dashboard.jpg)
+
+*The dashboard during a shift run by the trained PPO agent: one breakdown has cost the
+packer 2.8 % availability, the agent's low line speed keeps performance at 62 %, and the
+plan check flags product P1 running 124 minutes late.*
+
 - **Dashboard** at http://localhost:1880/dashboard: units out, throughput, energy
   per unit, lateness, the OEE proxy and its two factors, throughput over the shift
   and the current alerts against plan. Node-RED editor at http://localhost:1880,
